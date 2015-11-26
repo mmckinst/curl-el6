@@ -1,0 +1,42 @@
+From 802b0905b18e056aecfd55d075c5cae56a2d61ce Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Fri, 1 Apr 2011 16:31:28 +0200
+Subject: [PATCH] curl - bz #689031
+
+---
+ lib/nss.c |    7 +++++--
+ 1 files changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/lib/nss.c b/lib/nss.c
+index ab7fa80..f436417 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -1033,8 +1033,6 @@ void Curl_nss_close(struct connectdata *conn, int sockindex)
+   struct ssl_connect_data *connssl = &conn->ssl[sockindex];
+ 
+   if(connssl->handle) {
+-    PR_Close(connssl->handle);
+-
+     /* NSS closes the socket we previously handed to it, so we must mark it
+        as closed to avoid double close */
+     fake_sclose(conn->sock[sockindex]);
+@@ -1042,11 +1040,16 @@ void Curl_nss_close(struct connectdata *conn, int sockindex)
+     if(connssl->client_nickname != NULL) {
+       free(connssl->client_nickname);
+       connssl->client_nickname = NULL;
++
++      /* force NSS to ask again for a client cert when connecting
++       * next time to the same server */
++      SSL_InvalidateSession(connssl->handle);
+     }
+ #ifdef HAVE_PK11_CREATEGENERICOBJECT
+     Curl_llist_destroy(connssl->obj_list, NULL);
+     connssl->obj_list = NULL;
+ #endif
++    PR_Close(connssl->handle);
+     connssl->handle = NULL;
+   }
+ }
+-- 
+1.7.4
+

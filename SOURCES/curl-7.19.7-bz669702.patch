@@ -1,0 +1,206 @@
+From 1702ce633e5bb182e745a17e53c3fefa08959d75 Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Mon, 17 Jan 2011 17:02:04 +0100
+Subject: [PATCH 1/2] curl - bz669702
+
+---
+ docs/curl.1                     |    6 +--
+ docs/libcurl/curl_easy_setopt.3 |    3 +-
+ lib/nss.c                       |   99 ++++++++++++++++++++------------------
+ 3 files changed, 54 insertions(+), 54 deletions(-)
+
+diff --git a/docs/curl.1 b/docs/curl.1
+index 73421a9..ba32b6b 100644
+--- a/docs/curl.1
++++ b/docs/curl.1
+@@ -394,11 +394,7 @@ may be loaded.
+ If this option is used several times, the last one will be used.
+ .IP "--capath <CA certificate directory>"
+ (SSL) Tells curl to use the specified certificate directory to verify the
+-peer. The certificates must be in PEM format, and the directory must have been
+-processed using the c_rehash utility supplied with openssl. Using
+-\fI--capath\fP can allow curl to make SSL-connections much more efficiently
+-than using \fI--cacert\fP if the \fI--cacert\fP file contains many CA
+-certificates.
++peer. The certificates must be in PEM format.
+ 
+ If this option is used several times, the last one will be used.
+ .IP "-f/--fail"
+diff --git a/docs/libcurl/curl_easy_setopt.3 b/docs/libcurl/curl_easy_setopt.3
+index 5053b08..e6b981e 100644
+--- a/docs/libcurl/curl_easy_setopt.3
++++ b/docs/libcurl/curl_easy_setopt.3
+@@ -1622,8 +1622,7 @@ mismatch with the issuer of peer certificate (\fICURLOPT_SSL_VERIFYPEER\fP has
+ to be set too for the check to fail). (Added in 7.19.0)
+ .IP CURLOPT_CAPATH
+ Pass a char * to a zero terminated string naming a directory holding multiple
+-CA certificates to verify the peer with. The certificate directory must be
+-prepared using the openssl c_rehash utility. This makes sense only when used
++CA certificates to verify the peer with. This makes sense only when used
+ in combination with the \fICURLOPT_SSL_VERIFYPEER\fP option.  If
+ \fICURLOPT_SSL_VERIFYPEER\fP is zero, \fICURLOPT_CAPATH\fP need not even
+ indicate an accessible path.  The \fICURLOPT_CAPATH\fP function apparently
+diff --git a/lib/nss.c b/lib/nss.c
+index 18da297..24c5b33 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -1081,6 +1081,55 @@ int Curl_nss_close_all(struct SessionHandle *data)
+   return 0;
+ }
+ 
++static CURLcode nss_load_ca_certificates(struct connectdata *conn,
++                                         int sockindex)
++{
++  struct SessionHandle *data = conn->data;
++  const char *cafile = data->set.ssl.CAfile;
++  const char *capath = data->set.ssl.CApath;
++
++  if(cafile && !nss_load_cert(&conn->ssl[sockindex], cafile, PR_TRUE))
++    return CURLE_SSL_CACERT_BADFILE;
++
++  if(capath) {
++    struct_stat st;
++    if(stat(capath, &st) == -1)
++      return CURLE_SSL_CACERT_BADFILE;
++
++    if(S_ISDIR(st.st_mode)) {
++      PRDirEntry *entry;
++      PRDir *dir = PR_OpenDir(capath);
++      if(!dir)
++        return CURLE_SSL_CACERT_BADFILE;
++
++      while((entry = PR_ReadDir(dir, PR_SKIP_BOTH | PR_SKIP_HIDDEN))) {
++        char *fullpath = aprintf("%s/%s", capath, entry->name);
++        if(!fullpath) {
++          PR_CloseDir(dir);
++          return CURLE_OUT_OF_MEMORY;
++        }
++
++        if(!nss_load_cert(&conn->ssl[sockindex], fullpath, PR_TRUE))
++          /* This is purposefully tolerant of errors so non-PEM files can
++           * be in the same directory */
++          infof(data, "failed to load '%s' from CURLOPT_CAPATH\n", fullpath);
++
++        free(fullpath);
++      }
++
++      PR_CloseDir(dir);
++    }
++    else
++      infof(data, "warning: CURLOPT_CAPATH not a directory (%s)\n", capath);
++  }
++
++  infof(data, "  CAfile: %s\n  CApath: %s\n",
++      cafile ? cafile : "none",
++      capath ? capath : "none");
++
++  return CURLE_OK;
++}
++
+ CURLcode Curl_nss_connect(struct connectdata *conn, int sockindex)
+ {
+   PRInt32 err;
+@@ -1215,53 +1264,9 @@ CURLcode Curl_nss_connect(struct connectdata *conn, int sockindex)
+                            NULL) != SECSuccess)
+     goto error;
+ 
+-  if(!data->set.ssl.verifypeer)
+-    /* skip the verifying of the peer */
+-    ;
+-  else if(data->set.ssl.CAfile) {
+-    int rc = nss_load_cert(&conn->ssl[sockindex], data->set.ssl.CAfile,
+-                           PR_TRUE);
+-    if(!rc) {
+-      curlerr = CURLE_SSL_CACERT_BADFILE;
+-      goto error;
+-    }
+-  }
+-  else if(data->set.ssl.CApath) {
+-    struct_stat st;
+-    PRDir      *dir;
+-    PRDirEntry *entry;
+-
+-    if(stat(data->set.ssl.CApath, &st) == -1) {
+-      curlerr = CURLE_SSL_CACERT_BADFILE;
+-      goto error;
+-    }
+-
+-    if(S_ISDIR(st.st_mode)) {
+-      int rc;
+-
+-      dir = PR_OpenDir(data->set.ssl.CApath);
+-      do {
+-        entry = PR_ReadDir(dir, PR_SKIP_BOTH | PR_SKIP_HIDDEN);
+-
+-        if(entry) {
+-          char fullpath[PATH_MAX];
+-
+-          snprintf(fullpath, sizeof(fullpath), "%s/%s", data->set.ssl.CApath,
+-                   entry->name);
+-          rc = nss_load_cert(&conn->ssl[sockindex], fullpath, PR_TRUE);
+-          /* FIXME: check this return value! */
+-        }
+-        /* This is purposefully tolerant of errors so non-PEM files
+-         * can be in the same directory */
+-      } while(entry != NULL);
+-      PR_CloseDir(dir);
+-    }
+-  }
+-  infof(data,
+-        "  CAfile: %s\n"
+-        "  CApath: %s\n",
+-        data->set.ssl.CAfile ? data->set.ssl.CAfile : "none",
+-        data->set.ssl.CApath ? data->set.ssl.CApath : "none");
++  if(data->set.ssl.verifypeer && (CURLE_OK !=
++        (curlerr = nss_load_ca_certificates(conn, sockindex))))
++    goto error;
+ 
+   if (data->set.ssl.CRLfile) {
+     if(SECSuccess != nss_load_crl(data->set.ssl.CRLfile)) {
+-- 
+1.7.3.4
+
+From 8f39677a1dcac4007763f4f3a30c5df2c82771b5 Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Tue, 22 Feb 2011 13:13:53 +0100
+Subject: [PATCH 2/2] nss: do not ignore failure of SSL handshake
+
+Flaw introduced in fc77790 and present in curl-7.21.4.
+Bug: https://bugzilla.redhat.com/669702#c16
+---
+ lib/nss.c |   12 ++++++++----
+ 1 files changed, 8 insertions(+), 4 deletions(-)
+
+diff --git a/lib/nss.c b/lib/nss.c
+index 24c5b33..8ee2113 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -1140,7 +1140,7 @@ CURLcode Curl_nss_connect(struct connectdata *conn, int sockindex)
+   struct SessionHandle *data = conn->data;
+   curl_socket_t sockfd = conn->sock[sockindex];
+   struct ssl_connect_data *connssl = &conn->ssl[sockindex];
+-  int curlerr;
++  CURLcode curlerr;
+   const int *cipher_to_enable;
+   long time_left;
+   PRUint32 timeout;
+@@ -1264,9 +1264,13 @@ CURLcode Curl_nss_connect(struct connectdata *conn, int sockindex)
+                            NULL) != SECSuccess)
+     goto error;
+ 
+-  if(data->set.ssl.verifypeer && (CURLE_OK !=
+-        (curlerr = nss_load_ca_certificates(conn, sockindex))))
+-    goto error;
++  if(data->set.ssl.verifypeer) {
++    const CURLcode rv = nss_load_ca_certificates(conn, sockindex);
++    if(CURLE_OK != rv) {
++      curlerr = rv;
++      goto error;
++    }
++  }
+ 
+   if (data->set.ssl.CRLfile) {
+     if(SECSuccess != nss_load_crl(data->set.ssl.CRLfile)) {
+-- 
+1.7.4
+

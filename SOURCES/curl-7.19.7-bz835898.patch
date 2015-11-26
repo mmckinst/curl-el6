@@ -1,0 +1,126 @@
+From 3274f5fd914ba81c5a117fbb3256aff0e3d56823 Mon Sep 17 00:00:00 2001
+From: Daniel Stenberg <daniel@haxx.se>
+Date: Wed, 11 Nov 2009 09:31:37 +0000
+Subject: [PATCH] [upstream commit fb5f332834baeee1c9ec27dee6fc065364d5b7f3]
+
+- Constantine Sapuntzakis posted bug #2891595
+  (http://curl.haxx.se/bug/view.cgi?id=2891595) which identified how an entry
+  in the DNS cache would linger too long if the request that added it was in
+  use that long. He also provided the patch that now makes libcurl capable of
+  still doing a request while the DNS hash entry may get timed out.
+
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/hash.c   |    9 +++++----
+ lib/hostip.c |   31 +++++++++++++++----------------
+ 2 files changed, 20 insertions(+), 20 deletions(-)
+
+diff --git a/lib/hash.c b/lib/hash.c
+index b8fefb3..47e73ec 100644
+--- a/lib/hash.c
++++ b/lib/hash.c
+@@ -140,8 +140,8 @@ mk_hash_element(const void *key, size_t key_len, const void *p)
+ 
+ #define FETCH_LIST(x,y,z) x->table[x->hash_func(y, z, x->slots)]
+ 
+-/* Return the data in the hash. If there already was a match in the hash,
+-   that data is returned. */
++/* Insert the data in the hash. If there already was a match in the hash,
++   that data is replaced. */
+ void *
+ Curl_hash_add(struct curl_hash *h, void *key, size_t key_len, void *p)
+ {
+@@ -152,8 +152,9 @@ Curl_hash_add(struct curl_hash *h, void *key, size_t key_len, void *p)
+   for (le = l->head; le; le = le->next) {
+     he = (struct curl_hash_element *) le->ptr;
+     if(h->comp_func(he->key, he->key_len, key, key_len)) {
+-      h->dtor(p);     /* remove the NEW entry */
+-      return he->ptr; /* return the EXISTING entry */
++      Curl_llist_remove(l, le, (void *)h);
++      --h->size;
++      break;
+     }
+   }
+ 
+diff --git a/lib/hostip.c b/lib/hostip.c
+index ee5b9c9..da1937c 100644
+--- a/lib/hostip.c
++++ b/lib/hostip.c
+@@ -232,14 +232,7 @@ hostcache_timestamp_remove(void *datap, void *hc)
+     (struct hostcache_prune_data *) datap;
+   struct Curl_dns_entry *c = (struct Curl_dns_entry *) hc;
+ 
+-  if((data->now - c->timestamp < data->cache_timeout) ||
+-      c->inuse) {
+-    /* please don't remove */
+-    return 0;
+-  }
+-
+-  /* fine, remove */
+-  return 1;
++  return (data->now - c->timestamp >= data->cache_timeout);
+ }
+ 
+ /*
+@@ -339,7 +332,6 @@ Curl_cache_addr(struct SessionHandle *data,
+   size_t entry_len;
+   struct Curl_dns_entry *dns;
+   struct Curl_dns_entry *dns2;
+-  time_t now;
+ 
+   /* Create an entry id, based upon the hostname and port */
+   entry_id = create_hostcache_id(hostname, port);
+@@ -357,10 +349,11 @@ Curl_cache_addr(struct SessionHandle *data,
+ 
+   dns->inuse = 0;   /* init to not used */
+   dns->addr = addr; /* this is the address(es) */
++  time(&dns->timestamp);
++  if(dns->timestamp == 0)
++    dns->timestamp = 1;   /* zero indicates that entry isn't in hash table */
+ 
+-  /* Store the resolved data in our DNS cache. This function may return a
+-     pointer to an existing struct already present in the hash, and it may
+-     return the same argument we pass in. Make no assumptions. */
++  /* Store the resolved data in our DNS cache. */
+   dns2 = Curl_hash_add(data->dns.hostcache, entry_id, entry_len+1,
+                        (void *)dns);
+   if(!dns2) {
+@@ -369,10 +362,8 @@ Curl_cache_addr(struct SessionHandle *data,
+     free(entry_id);
+     return NULL;
+   }
+-  time(&now);
+-  dns = dns2;
+ 
+-  dns->timestamp = now; /* used now */
++  dns = dns2;
+   dns->inuse++;         /* mark entry as in-use */
+ 
+   /* free the allocated entry_id again */
+@@ -695,6 +686,12 @@ void Curl_resolv_unlock(struct SessionHandle *data, struct Curl_dns_entry *dns)
+     Curl_share_lock(data, CURL_LOCK_DATA_DNS, CURL_LOCK_ACCESS_SINGLE);
+ 
+   dns->inuse--;
++  /* only free if nobody is using AND it is not in hostcache (timestamp ==
++     0) */
++  if (dns->inuse == 0 && dns->timestamp == 0) {
++    Curl_freeaddrinfo(dns->addr);
++    free(dns);
++  }
+ 
+   if(data->share)
+     Curl_share_unlock(data, CURL_LOCK_DATA_DNS);
+@@ -707,7 +704,9 @@ static void freednsentry(void *freethis)
+ {
+   struct Curl_dns_entry *p = (struct Curl_dns_entry *) freethis;
+ 
+-  if(p) {
++  /* mark the entry as not in hostcache */
++  p->timestamp = 0;
++  if (p->inuse == 0) {
+     Curl_freeaddrinfo(p->addr);
+     free(p);
+   }
+-- 
+1.7.1
+

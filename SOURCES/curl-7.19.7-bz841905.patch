@@ -1,0 +1,71 @@
+From 0d561fcdbd572bee0b3c2dc397229f5f546655b9 Mon Sep 17 00:00:00 2001
+From: Daniel Stenberg <daniel@haxx.se>
+Date: Wed, 20 Oct 2010 23:29:37 +0200
+Subject: [PATCH] SSH: avoid using the libssh2_ prefix
+
+[upstream commit 5997f54a715a7304c39ee946a3c460f03dde1a8a]
+
+It is a bad idea to use the public prefix used by another library and
+now we realize that libssh2 introduces a symbol in the upcoming version
+1.2.8 that conflicts with our static function named libssh2_free.
+
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/ssh.c |   17 +++++++++--------
+ 1 files changed, 9 insertions(+), 8 deletions(-)
+
+diff --git a/lib/ssh.c b/lib/ssh.c
+index 83ae1cb..77e5b55 100644
+--- a/lib/ssh.c
++++ b/lib/ssh.c
+@@ -117,9 +117,9 @@
+ 
+ /* Local functions: */
+ static const char *sftp_libssh2_strerror(unsigned long err);
+-static LIBSSH2_ALLOC_FUNC(libssh2_malloc);
+-static LIBSSH2_REALLOC_FUNC(libssh2_realloc);
+-static LIBSSH2_FREE_FUNC(libssh2_free);
++static LIBSSH2_ALLOC_FUNC(my_libssh2_malloc);
++static LIBSSH2_REALLOC_FUNC(my_libssh2_realloc);
++static LIBSSH2_FREE_FUNC(my_libssh2_free);
+ 
+ static CURLcode get_pathname(const char **cpp, char **path);
+ 
+@@ -274,19 +274,19 @@ static CURLcode libssh2_session_error_to_CURLE(int err)
+   return CURLE_SSH;
+ }
+ 
+-static LIBSSH2_ALLOC_FUNC(libssh2_malloc)
++static LIBSSH2_ALLOC_FUNC(my_libssh2_malloc)
+ {
+   (void)abstract; /* arg not used */
+   return malloc(count);
+ }
+ 
+-static LIBSSH2_REALLOC_FUNC(libssh2_realloc)
++static LIBSSH2_REALLOC_FUNC(my_libssh2_realloc)
+ {
+   (void)abstract; /* arg not used */
+   return realloc(ptr, count);
+ }
+ 
+-static LIBSSH2_FREE_FUNC(libssh2_free)
++static LIBSSH2_FREE_FUNC(my_libssh2_free)
+ {
+   (void)abstract; /* arg not used */
+   free(ptr);
+@@ -2429,8 +2429,9 @@ static CURLcode ssh_connect(struct connectdata *conn, bool *done)
+   sock = conn->sock[FIRSTSOCKET];
+ #endif /* CURL_LIBSSH2_DEBUG */
+ 
+-  ssh->ssh_session = libssh2_session_init_ex(libssh2_malloc, libssh2_free,
+-                                             libssh2_realloc, conn);
++  ssh->ssh_session = libssh2_session_init_ex(my_libssh2_malloc,
++                                             my_libssh2_free,
++                                             my_libssh2_realloc, conn);
+   if(ssh->ssh_session == NULL) {
+     failf(data, "Failure initialising ssh session");
+     return CURLE_FAILED_INIT;
+-- 
+1.7.1
+

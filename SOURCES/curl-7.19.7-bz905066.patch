@@ -1,0 +1,49 @@
+From 6dd0767df72367c5007571ab531b6dbdacc25eb3 Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Mon, 28 Jan 2013 14:07:32 +0100
+Subject: [PATCH] docs: update the comments about loading CA certs with NSS
+
+Bug: https://bugzilla.redhat.com/696783
+
+[upstream commit 11dde6ac7237f9f2cd43778ad2ea58dba0ed480b]
+---
+ docs/curl.1                     |    7 ++-----
+ docs/libcurl/curl_easy_setopt.3 |    4 ++--
+ 2 files changed, 4 insertions(+), 7 deletions(-)
+
+diff --git a/docs/curl.1 b/docs/curl.1
+index 7eef690..2a14fac 100644
+--- a/docs/curl.1
++++ b/docs/curl.1
+@@ -397,11 +397,8 @@ The windows version of curl will automatically look for a CA certs file named
+ \'curl-ca-bundle.crt\', either in the same directory as curl.exe, or in the
+ Current Working Directory, or in any folder along your PATH.
+ 
+-If curl is built against the NSS SSL library then this option tells
+-curl the nickname of the CA certificate to use within the NSS database
+-defined by the environment variable SSL_DIR (or by default /etc/pki/nssdb).
+-If the NSS PEM PKCS#11 module (libnsspem.so) is available then PEM files
+-may be loaded.
++If curl is built against the NSS SSL library, the NSS PEM PKCS#11 module
++(libnsspem.so) needs to be available for this option to work properly.
+ 
+ If this option is used several times, the last one will be used.
+ .IP "--capath <CA certificate directory>"
+diff --git a/docs/libcurl/curl_easy_setopt.3 b/docs/libcurl/curl_easy_setopt.3
+index 66cb0df..3715494 100644
+--- a/docs/libcurl/curl_easy_setopt.3
++++ b/docs/libcurl/curl_easy_setopt.3
+@@ -1602,8 +1602,8 @@ even indicate an accessible file.
+ Note that option is by default set to the system path where libcurl's cacert
+ bundle is assumed to be stored, as established at build time.
+ 
+-When built against NSS, this is the directory that the NSS certificate
+-database resides in.
++If curl is built against the NSS SSL library, the NSS PEM PKCS#11 module
++(libnsspem.so) needs to be available for this option to work properly.
+ .IP CURLOPT_ISSUERCERT
+ Pass a char * to a zero terminated string naming a file holding a CA
+ certificate in PEM format. If the option is set, an additional check against
+-- 
+1.7.1
+

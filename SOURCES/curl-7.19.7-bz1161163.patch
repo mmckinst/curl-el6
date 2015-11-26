@@ -1,0 +1,34 @@
+From 71eba4362fd3cee744d4adf57cab451ab26642aa Mon Sep 17 00:00:00 2001
+From: Martin Jansen <martin@divbyzero.net>
+Date: Wed, 6 Mar 2013 21:20:44 +0100
+Subject: [PATCH] Curl_proxyCONNECT: count received headers
+
+Proxy servers tend to add their own headers at the beginning of
+responses. The size of these headers was not taken into account by
+CURLINFO_HEADER_SIZE before this change.
+
+Bug: http://curl.haxx.se/bug/view.cgi?id=1204
+Upstream-commit: bc6037ed3ec029b9f1372f708521fcada4a74af7
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/http.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/lib/http.c b/lib/http.c
+index 559e89b..0b62a99 100644
+--- a/lib/http.c
++++ b/lib/http.c
+@@ -1575,6 +1575,10 @@ CURLcode Curl_proxyCONNECT(struct connectdata *conn,
+ 
+                   result = Curl_client_write(conn, writetype, line_start,
+                                              perline);
++
++                  data->info.header_size += (long)perline;
++                  data->req.headerbytecount += (long)perline;
++
+                   if(result)
+                     return result;
+ 
+-- 
+2.1.0
+

@@ -1,0 +1,299 @@
+From a053fa89b756a47a9f76f7cf957e2d8fd1bbdbf6 Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Tue, 9 Nov 2010 17:04:04 +0100
+Subject: [PATCH 1/2] ftp: treat server's response 421 as CURLE_OPERATION_TIMEDOUT
+
+Bug: https://bugzilla.redhat.com/650255
+Reported by: Simon H.
+---
+ lib/ftp.c |    6 ++++++
+ 1 files changed, 6 insertions(+), 0 deletions(-)
+
+diff --git a/lib/ftp.c b/lib/ftp.c
+index fe32f38..ffe65e9 100644
+--- a/lib/ftp.c
++++ b/lib/ftp.c
+@@ -597,6 +597,12 @@ static CURLcode ftp_readresp(curl_socket_t sockfd,
+ 
+   ftpc->pending_resp = FALSE;
+ 
++  if(421 == code)
++    /* 421 means "Service not available, closing control connection." and FTP
++     * servers use it to signal that idle session timeout has been exceeded.
++     * If we ignored the response, it could end up hanging in some cases. */
++    return CURLE_OPERATION_TIMEDOUT;
++
+   return result;
+ }
+ 
+-- 
+1.7.3.4
+
+
+From bcc49deccfc0554c0dcc33647fb97b69bea30fc0 Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Fri, 19 Nov 2010 13:43:20 +0100
+Subject: [PATCH 2/2] url: provide dead_connection flag in Curl_handler::disconnect
+
+It helps to prevent a hangup with some FTP servers in case idle session
+timeout has exceeded.  But it may be useful also for other protocols
+that send any quit message on disconnect.  Currently used by FTP.
+---
+ lib/ftp.c      |    6 ++++--
+ lib/multi.c    |    5 +++--
+ lib/ssh.c      |   10 ++++++----
+ lib/tftp.c     |    5 +++--
+ lib/transfer.c |    2 +-
+ lib/url.c      |   17 +++++++++--------
+ lib/url.h      |    2 +-
+ lib/urldata.h  |    6 ++++--
+ 8 files changed, 31 insertions(+), 22 deletions(-)
+
+diff --git a/lib/ftp.c b/lib/ftp.c
+index ffe65e9..aa547c8 100644
+--- a/lib/ftp.c
++++ b/lib/ftp.c
+@@ -141,7 +141,7 @@ static CURLcode ftp_do(struct connectdata *conn, bool *done);
+ static CURLcode ftp_done(struct connectdata *conn,
+                               CURLcode, bool premature);
+ static CURLcode ftp_connect(struct connectdata *conn, bool *done);
+-static CURLcode ftp_disconnect(struct connectdata *conn);
++static CURLcode ftp_disconnect(struct connectdata *conn, bool dead_connection);
+ static CURLcode ftp_nextconnect(struct connectdata *conn);
+ static CURLcode ftp_multi_statemach(struct connectdata *conn, bool *done);
+ static int ftp_getsock(struct connectdata *conn,
+@@ -3897,7 +3897,7 @@ static CURLcode ftp_quit(struct connectdata *conn)
+  * Disconnect from an FTP server. Cleanup protocol-specific per-connection
+  * resources. BLOCKING.
+  */
+-static CURLcode ftp_disconnect(struct connectdata *conn)
++static CURLcode ftp_disconnect(struct connectdata *conn, bool dead_connection)
+ {
+   struct ftp_conn *ftpc= &conn->proto.ftpc;
+ 
+@@ -3908,6 +3908,8 @@ static CURLcode ftp_disconnect(struct connectdata *conn)
+      ftp_quit() will check the state of ftp->ctl_valid. If it's ok it
+      will try to send the QUIT command, otherwise it will just return.
+   */
++  if(dead_connection)
++    ftpc->ctl_valid = FALSE;
+ 
+   /* The FTP session may or may not have been allocated/setup at this point! */
+   (void)ftp_quit(conn); /* ignore errors on the QUIT */
+diff --git a/lib/multi.c b/lib/multi.c
+index 48df928..a5d2dc5 100644
+--- a/lib/multi.c
++++ b/lib/multi.c
+@@ -1523,7 +1523,8 @@ static CURLMcode multi_runsingle(struct Curl_multi *multi,
+         }
+ 
+         if(disconnect_conn) {
+-          Curl_disconnect(easy->easy_conn); /* disconnect properly */
++          /* disconnect properly */
++          Curl_disconnect(easy->easy_conn, /* dead_connection */ FALSE);
+ 
+           /* This is where we make sure that the easy_conn pointer is reset.
+              We don't have to do this in every case block above where a
+@@ -1652,7 +1653,7 @@ CURLMcode curl_multi_cleanup(CURLM *multi_handle)
+     for(i=0; i< multi->connc->num; i++) {
+       if(multi->connc->connects[i] &&
+          multi->connc->connects[i]->protocol & PROT_CLOSEACTION) {
+-        Curl_disconnect(multi->connc->connects[i]);
++        Curl_disconnect(multi->connc->connects[i], /* dead_connection */ FALSE);
+         multi->connc->connects[i] = NULL;
+       }
+     }
+diff --git a/lib/ssh.c b/lib/ssh.c
+index 91a10fa..83ae1cb 100644
+--- a/lib/ssh.c
++++ b/lib/ssh.c
+@@ -135,13 +135,13 @@ static CURLcode scp_done(struct connectdata *conn,
+                          CURLcode, bool premature);
+ static CURLcode scp_doing(struct connectdata *conn,
+                           bool *dophase_done);
+-static CURLcode scp_disconnect(struct connectdata *conn);
++static CURLcode scp_disconnect(struct connectdata *conn, bool dead_connection);
+ 
+ static CURLcode sftp_done(struct connectdata *conn,
+                           CURLcode, bool premature);
+ static CURLcode sftp_doing(struct connectdata *conn,
+                            bool *dophase_done);
+-static CURLcode sftp_disconnect(struct connectdata *conn);
++static CURLcode sftp_disconnect(struct connectdata *conn, bool dead_connection);
+ static
+ CURLcode sftp_perform(struct connectdata *conn,
+                       bool *connected,
+@@ -2570,10 +2570,11 @@ static CURLcode ssh_do(struct connectdata *conn, bool *done)
+ /* BLOCKING, but the function is using the state machine so the only reason this
+    is still blocking is that the multi interface code has no support for
+    disconnecting operations that takes a while */
+-static CURLcode scp_disconnect(struct connectdata *conn)
++static CURLcode scp_disconnect(struct connectdata *conn, bool dead_connection)
+ {
+   CURLcode result = CURLE_OK;
+   struct ssh_conn *ssh = &conn->proto.sshc;
++  (void) dead_connection;
+ 
+   Curl_safefree(conn->data->state.proto.ssh);
+   conn->data->state.proto.ssh = NULL;
+@@ -2728,9 +2729,10 @@ static CURLcode sftp_doing(struct connectdata *conn,
+ /* BLOCKING, but the function is using the state machine so the only reason this
+    is still blocking is that the multi interface code has no support for
+    disconnecting operations that takes a while */
+-static CURLcode sftp_disconnect(struct connectdata *conn)
++static CURLcode sftp_disconnect(struct connectdata *conn, bool dead_connection)
+ {
+   CURLcode result = CURLE_OK;
++  (void) dead_connection;
+ 
+   DEBUGF(infof(conn->data, "SSH DISCONNECT starts now\n"));
+ 
+diff --git a/lib/tftp.c b/lib/tftp.c
+index ee57528..af3f702 100644
+--- a/lib/tftp.c
++++ b/lib/tftp.c
+@@ -161,7 +161,7 @@ typedef struct tftp_state_data {
+ static CURLcode tftp_rx(tftp_state_data_t *state, tftp_event_t event) ;
+ static CURLcode tftp_tx(tftp_state_data_t *state, tftp_event_t event) ;
+ static CURLcode tftp_connect(struct connectdata *conn, bool *done);
+-static CURLcode tftp_disconnect(struct connectdata *conn);
++static CURLcode tftp_disconnect(struct connectdata *conn, bool dead_connection);
+ static CURLcode tftp_do(struct connectdata *conn, bool *done);
+ static CURLcode tftp_done(struct connectdata *conn,
+                                CURLcode, bool premature);
+@@ -805,9 +805,10 @@ static CURLcode tftp_state_machine(tftp_state_data_t *state,
+  * The disconnect callback
+  *
+  **********************************************************/
+-static CURLcode tftp_disconnect(struct connectdata *conn)
++static CURLcode tftp_disconnect(struct connectdata *conn, bool dead_connection)
+ {
+   tftp_state_data_t *state = conn->proto.tftpc;
++  (void) dead_connection;
+ 
+   /* done, free dynamically allocated pkt buffers */
+   if(state) {
+diff --git a/lib/transfer.c b/lib/transfer.c
+index c3a1976..3c566ea 100644
+--- a/lib/transfer.c
++++ b/lib/transfer.c
+@@ -2496,7 +2496,7 @@ connect_host(struct SessionHandle *data,
+       res = Curl_async_resolved(*conn, &protocol_done);
+     else
+       /* if we can't resolve, we kill this "connection" now */
+-      (void)Curl_disconnect(*conn);
++      (void)Curl_disconnect(*conn, /* dead_connection */ FALSE);
+   }
+ 
+   return res;
+diff --git a/lib/url.c b/lib/url.c
+index d4d4adf..adecd4f 100644
+--- a/lib/url.c
++++ b/lib/url.c
+@@ -604,7 +604,7 @@ CURLcode Curl_ch_connc(struct SessionHandle *data,
+        close handles not in use.
+     */
+     for(i=newamount; i< c->num; i++)
+-      Curl_disconnect(c->connects[i]);
++      Curl_disconnect(c->connects[i], /* dead_connection */ FALSE);
+ 
+     /* If the most recent connection is no longer valid, mark it
+        invalid. */
+@@ -2344,7 +2344,7 @@ static void conn_free(struct connectdata *conn)
+   free(conn); /* free all the connection oriented data */
+ }
+ 
+-CURLcode Curl_disconnect(struct connectdata *conn)
++CURLcode Curl_disconnect(struct connectdata *conn, bool dead_connection)
+ {
+   struct SessionHandle *data;
+   if(!conn)
+@@ -2400,7 +2400,7 @@ CURLcode Curl_disconnect(struct connectdata *conn)
+ 
+   if(conn->handler->disconnect)
+     /* This is set if protocol-specific cleanups should be made */
+-    conn->handler->disconnect(conn);
++    conn->handler->disconnect(conn, dead_connection);
+ 
+   if(-1 != conn->connectindex) {
+     /* unlink ourselves! */
+@@ -2625,7 +2625,8 @@ ConnectionExists(struct SessionHandle *data,
+         check->data = data;
+         infof(data, "Connection #%d seems to be dead!\n", i);
+ 
+-        Curl_disconnect(check); /* disconnect resources */
++        /* disconnect resources */
++        Curl_disconnect(check, /* dead_connection */ TRUE);
+         data->state.connc->connects[i]=NULL; /* nothing here */
+ 
+         continue;
+@@ -2805,7 +2806,7 @@ ConnectionKillOne(struct SessionHandle *data)
+     conn->data = data;
+ 
+     /* the winner gets the honour of being disconnected */
+-    (void)Curl_disconnect(conn);
++    (void)Curl_disconnect(conn, /* dead_connection */ FALSE);
+ 
+     /* clean the array entry */
+     data->state.connc->connects[connindex] = NULL;
+@@ -4824,7 +4825,7 @@ CURLcode Curl_connect(struct SessionHandle *data,
+   if(code && *in_connect) {
+     /* We're not allowed to return failure with memory left allocated
+        in the connectdata struct, free those here */
+-    Curl_disconnect(*in_connect); /* close the connection */
++    Curl_disconnect(*in_connect, FALSE); /* close the connection */
+     *in_connect = NULL;           /* return a NULL */
+   }
+ 
+@@ -4846,7 +4847,7 @@ CURLcode Curl_async_resolved(struct connectdata *conn,
+   if(code)
+     /* We're not allowed to return failure with memory left allocated
+        in the connectdata struct, free those here */
+-    Curl_disconnect(conn); /* close the connection */
++    Curl_disconnect(conn, FALSE); /* close the connection */
+ 
+   return code;
+ #else
+@@ -4940,7 +4941,7 @@ CURLcode Curl_done(struct connectdata **connp,
+   */
+   if(data->set.reuse_forbid || conn->bits.close || premature ||
+      (-1 == conn->connectindex)) {
+-    CURLcode res2 = Curl_disconnect(conn); /* close the connection */
++    CURLcode res2 = Curl_disconnect(conn, FALSE); /* close the connection */
+ 
+     /* If we had an error already, make sure we return that one. But
+        if we got a new error, return that. */
+diff --git a/lib/url.h b/lib/url.h
+index 0e7a107..7c13d4a 100644
+--- a/lib/url.h
++++ b/lib/url.h
+@@ -43,7 +43,7 @@ CURLcode Curl_async_resolved(struct connectdata *conn,
+ CURLcode Curl_do(struct connectdata **, bool *done);
+ CURLcode Curl_do_more(struct connectdata *);
+ CURLcode Curl_done(struct connectdata **, CURLcode, bool premature);
+-CURLcode Curl_disconnect(struct connectdata *);
++CURLcode Curl_disconnect(struct connectdata *, bool dead_connection);
+ CURLcode Curl_protocol_connect(struct connectdata *conn, bool *done);
+ CURLcode Curl_protocol_connecting(struct connectdata *conn, bool *done);
+ CURLcode Curl_protocol_doing(struct connectdata *conn, bool *done);
+diff --git a/lib/urldata.h b/lib/urldata.h
+index 503df18..59ecb54 100644
+--- a/lib/urldata.h
++++ b/lib/urldata.h
+@@ -882,9 +882,11 @@ struct Curl_handler {
+                          int numsocks);
+ 
+   /* This function *MAY* be set to a protocol-dependent function that is run
+-   * by the curl_disconnect(), as a step in the disconnection.
++   * by the curl_disconnect(), as a step in the disconnection.  If the handler
++   * is called because the connection has been considered dead, dead_connection
++   * is set to TRUE.
+    */
+-  CURLcode (*disconnect)(struct connectdata *);
++  CURLcode (*disconnect)(struct connectdata *, bool dead_connection);
+ 
+   long defport;       /* Default port. */
+   long protocol;      /* PROT_* flags concerning the protocol set */
+-- 
+1.7.3.4
+

@@ -1,0 +1,160 @@
+From 94f5fc776f19f7bb64e891383798576fd856934c Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Wed, 29 Oct 2014 14:14:23 +0100
+Subject: [PATCH 1/2] nss: drop the code for libcurl-level downgrade to SSLv3
+
+This code was already deactivated by commit
+ec783dc142129d3860e542b443caaa78a6172d56.
+
+Upstream-commit: 3f430c9c3a4e3748bc075b633a9324c5037c9fe7
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/nss.c | 53 -----------------------------------------------------
+ 1 file changed, 53 deletions(-)
+
+diff --git a/lib/nss.c b/lib/nss.c
+index 8d08e88..c2beac8 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -840,36 +840,6 @@ static SECStatus SelectClientCert(void *arg, PRFileDesc *sock,
+   return SECSuccess;
+ }
+ 
+-/* This function is supposed to decide, which error codes should be used
+- * to conclude server is TLS intolerant.
+- *
+- * taken from xulrunner - nsNSSIOLayer.cpp
+- */
+-static PRBool
+-isTLSIntoleranceError(PRInt32 err)
+-{
+-  switch (err) {
+-  case SSL_ERROR_BAD_MAC_ALERT:
+-  case SSL_ERROR_BAD_MAC_READ:
+-  case SSL_ERROR_HANDSHAKE_FAILURE_ALERT:
+-  case SSL_ERROR_HANDSHAKE_UNEXPECTED_ALERT:
+-  case SSL_ERROR_CLIENT_KEY_EXCHANGE_FAILURE:
+-  case SSL_ERROR_ILLEGAL_PARAMETER_ALERT:
+-  case SSL_ERROR_NO_CYPHER_OVERLAP:
+-  case SSL_ERROR_BAD_SERVER:
+-  case SSL_ERROR_BAD_BLOCK_PADDING:
+-  case SSL_ERROR_UNSUPPORTED_VERSION:
+-  case SSL_ERROR_PROTOCOL_VERSION_ALERT:
+-  case SSL_ERROR_RX_MALFORMED_FINISHED:
+-  case SSL_ERROR_BAD_HANDSHAKE_HASH_VALUE:
+-  case SSL_ERROR_DECODE_ERROR_ALERT:
+-  case SSL_ERROR_RX_UNKNOWN_ALERT:
+-    return PR_TRUE;
+-  default:
+-    return PR_FALSE;
+-  }
+-}
+-
+ /* update blocking direction in case of PR_WOULD_BLOCK_ERROR */
+ static void nss_update_connecting_state(ssl_connect_state state, void *secret)
+ {
+@@ -1207,10 +1177,6 @@ static CURLcode nss_init_sslver(SSLVersionRange *sslver,
+   default:
+   case CURL_SSLVERSION_DEFAULT:
+     sslver->min = SSL_LIBRARY_VERSION_3_0;
+-    if(data->state.ssl_connect_retry) {
+-      infof(data, "TLS disabled due to previous handshake failure\n");
+-      sslver->max = SSL_LIBRARY_VERSION_3_0;
+-    }
+     return CURLE_OK;
+ 
+   case CURL_SSLVERSION_TLSv1:
+@@ -1263,29 +1229,13 @@ static CURLcode nss_fail_connect(struct ssl_connect_data *connssl,
+                                  struct SessionHandle *data,
+                                  CURLcode curlerr)
+ {
+-  SSLVersionRange sslver;
+   const PRErrorCode err = PR_GetError();
+ 
+-  /* reset the flag to avoid an infinite loop */
+-  data->state.ssl_connect_retry = FALSE;
+-
+   infof(data, "NSS error %d\n", err);
+ 
+   /* cleanup on connection failure */
+   Curl_llist_destroy(connssl->obj_list, NULL);
+   connssl->obj_list = NULL;
+-
+-  if(connssl->handle
+-      && (SSL_VersionRangeGet(connssl->handle, &sslver) == SECSuccess)
+-      && (sslver.min == SSL_LIBRARY_VERSION_3_0)
+-      && (sslver.max != SSL_LIBRARY_VERSION_3_0)
+-      && isTLSIntoleranceError(err)) {
+-    /* schedule reconnect through Curl_retry_request() */
+-    data->state.ssl_connect_retry = TRUE;
+-    infof(data, "Error in TLS handshake, trying SSLv3...\n");
+-    return CURLE_OK;
+-  }
+-
+   return curlerr;
+ }
+ 
+@@ -1380,9 +1330,6 @@ static CURLcode nss_setup_connect(struct connectdata *conn, int sockindex)
+   if(SSL_VersionRangeSet(model, &sslver) != SECSuccess)
+     goto error;
+ 
+-  /* reset the flag to avoid an infinite loop */
+-  data->state.ssl_connect_retry = FALSE;
+-
+   if(data->set.ssl.cipher_list) {
+     if(set_ciphers(data, model, data->set.ssl.cipher_list) != SECSuccess) {
+       curlerr = CURLE_SSL_CIPHER;
+-- 
+2.1.0
+
+
+From 2559ffed1befc97c1c0ab3b66881428e21f169f5 Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Wed, 29 Oct 2014 14:24:54 +0100
+Subject: [PATCH 2/2] transfer: drop the code handling the ssl_connect_retry
+ flag
+
+Its last use has been removed by the previous commit.
+
+Upstream-commit: 276741af4ddebe0cc0d446712fb8dfdf0c140e7b
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/transfer.c | 6 ++----
+ lib/urldata.h  | 3 ---
+ 2 files changed, 2 insertions(+), 7 deletions(-)
+
+diff --git a/lib/transfer.c b/lib/transfer.c
+index 6ba617d..b22266c 100644
+--- a/lib/transfer.c
++++ b/lib/transfer.c
+@@ -2608,11 +2608,9 @@ CURLcode Curl_retry_request(struct connectdata *conn,
+   if(data->set.upload && !(conn->protocol&PROT_HTTP))
+     return CURLE_OK;
+ 
+-  if(/* workaround for broken TLS servers */ data->state.ssl_connect_retry ||
+-      ((data->req.bytecount +
+-      data->req.headerbytecount == 0) &&
++  if((data->req.bytecount + data->req.headerbytecount == 0) &&
+      conn->bits.reuse &&
+-     !data->set.opt_no_body)) {
++     !data->set.opt_no_body) {
+     /* We got no data, we attempted to re-use a connection and yet we want a
+        "body". This might happen if the connection was left alive when we were
+        done using it before, but that was closed when we wanted to read from
+diff --git a/lib/urldata.h b/lib/urldata.h
+index e0b6b2d..25896b6 100644
+--- a/lib/urldata.h
++++ b/lib/urldata.h
+@@ -1335,9 +1335,6 @@ struct UrlState {
+   } proto;
+   /* current user of this SessionHandle instance, or NULL */
+   struct connectdata *current_conn;
+-
+-  /* if true, force SSL connection retry (workaround for certain servers) */
+-  bool ssl_connect_retry;
+ };
+ 
+ 
+-- 
+2.1.0
+

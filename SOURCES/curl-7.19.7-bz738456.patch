@@ -1,0 +1,77 @@
+From 07908400edfe11415ae40a40cedc8fc91090ee0f Mon Sep 17 00:00:00 2001
+From: Jan Vcelak <jvcelak@redhat.com>
+Date: Mon, 9 Jan 2012 15:56:28 +0100
+Subject: [PATCH] curl - bz #738456 [V2]
+
+---
+ lib/nss.c |   23 +++++++++++++++++------
+ 1 files changed, 17 insertions(+), 6 deletions(-)
+
+diff --git a/lib/nss.c b/lib/nss.c
+index 3dfd3eb..6c1598b 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -83,6 +83,7 @@ PRFileDesc *PR_ImportTCPSocket(PRInt32 osfd);
+ 
+ PRLock * nss_initlock = NULL;
+ PRLock * nss_crllock = NULL;
++NSSInitContext * nss_context = NULL;
+ 
+ volatile int initialized = 0;
+ 
+@@ -887,28 +888,37 @@ isTLSIntoleranceError(PRInt32 err)
+ 
+ static CURLcode nss_init_core(struct SessionHandle *data, const char *cert_dir)
+ {
+-  if(NSS_IsInitialized())
++  if(nss_context != NULL)
+     return CURLE_OK;
+ 
++  NSSInitParameters initparams;
++  memset((void *) &initparams, '\0', sizeof(initparams));
++  initparams.length = sizeof(initparams);
++
+   if(cert_dir) {
+-    SECStatus rv;
+     const bool use_sql = NSS_VersionCheck("3.12.0");
+     char *certpath = aprintf("%s%s", use_sql ? "sql:" : "", cert_dir);
+     if(!certpath)
+       return CURLE_OUT_OF_MEMORY;
+ 
+     infof(data, "Initializing NSS with certpath: %s\n", certpath);
+-    rv = NSS_Initialize(certpath, "", "", "", NSS_INIT_READONLY);
++    nss_context = NSS_InitContext(certpath, "", "", "", &initparams,
++            NSS_INIT_READONLY | NSS_INIT_PK11RELOAD);
++
+     free(certpath);
+ 
+-    if(rv == SECSuccess)
++    if(nss_context != NULL)
+       return CURLE_OK;
+ 
+     infof(data, "Unable to initialize NSS database\n");
+   }
+ 
+   infof(data, "Initializing NSS with certpath: none\n");
+-  if(NSS_NoDB_Init(NULL) == SECSuccess)
++  nss_context = NSS_InitContext("", "", "", "", &initparams, NSS_INIT_READONLY
++          | NSS_INIT_NOCERTDB   | NSS_INIT_NOMODDB       | NSS_INIT_FORCEOPEN
++          | NSS_INIT_NOROOTINIT | NSS_INIT_OPTIMIZESPACE | NSS_INIT_PK11RELOAD);
++
++  if(nss_context != NULL)
+     return CURLE_OK;
+ 
+   infof(data, "Unable to initialize NSS\n");
+@@ -1004,7 +1014,8 @@ void Curl_nss_cleanup(void)
+       SECMOD_DestroyModule(mod);
+       mod = NULL;
+     }
+-    NSS_Shutdown();
++    NSS_ShutdownContext(nss_context);
++    nss_context = NULL;
+   }
+   PR_Unlock(nss_initlock);
+ 
+-- 
+1.7.1
+

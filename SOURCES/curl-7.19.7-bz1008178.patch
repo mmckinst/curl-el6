@@ -1,0 +1,608 @@
+From 5d564b7b83233c6ed24c8884bf6f0f40b0e9c6be Mon Sep 17 00:00:00 2001
+From: Daniel Stenberg <daniel@haxx.se>
+Date: Sat, 26 Feb 2011 10:59:03 +0100
+Subject: [PATCH 1/6] ssh_connect: treat libssh2 return code better
+
+libssh2_knownhost_readfile() returns a negative value on error or
+otherwise number of parsed known hosts - this was previously not
+documented correctly in the libssh2 man page for the function.
+
+Bug: http://curl.haxx.se/mail/lib-2011-02/0327.html
+Reported by: murat
+
+[upstream commit 17de1cc3827c7229db3263cc18fdd186bccd1e6e]
+
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/ssh.c |    3 +--
+ 1 files changed, 1 insertions(+), 2 deletions(-)
+
+diff --git a/lib/ssh.c b/lib/ssh.c
+index a411e08..db4c928 100644
+--- a/lib/ssh.c
++++ b/lib/ssh.c
+@@ -2460,10 +2460,9 @@ static CURLcode ssh_connect(struct connectdata *conn, bool *done)
+     rc = libssh2_knownhost_readfile(ssh->kh,
+                                     data->set.str[STRING_SSH_KNOWNHOSTS],
+                                     LIBSSH2_KNOWNHOST_FILE_OPENSSH);
+-    if(rc) {
++    if(rc < 0)
+       infof(data, "Failed to read known hosts from %s\n",
+             data->set.str[STRING_SSH_KNOWNHOSTS]);
+-    }
+   }
+ #endif /* HAVE_LIBSSH2_KNOWNHOST_API */
+ 
+-- 
+1.7.1
+
+
+From f395d948ed1d475a2c174abd2fddaa2c76bf5903 Mon Sep 17 00:00:00 2001
+From: Daniel Stenberg <daniel@haxx.se>
+Date: Wed, 20 Apr 2011 22:43:41 +0200
+Subject: [PATCH 2/6] SSH: move knownhost logic to separate function
+
+[upstream commit 9869668884cb132e741a874894bdfe9762fb7c72]
+
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/ssh.c |  238 ++++++++++++++++++++++++++++++++-----------------------------
+ 1 files changed, 126 insertions(+), 112 deletions(-)
+
+diff --git a/lib/ssh.c b/lib/ssh.c
+index a411e08..645d519 100644
+--- a/lib/ssh.c
++++ b/lib/ssh.c
+@@ -469,6 +469,129 @@ static int sshkeycallback(CURL *easy,
+                                              (libssh2_uint64_t)d, 0, 0)
+ #endif
+ 
++static CURLcode ssh_knownhost(struct connectdata *conn)
++{
++  struct SessionHandle *data = conn->data;
++  CURLcode result = CURLE_OK;
++
++#ifdef HAVE_LIBSSH2_KNOWNHOST_API
++  if(data->set.str[STRING_SSH_KNOWNHOSTS]) {
++    /* we're asked to verify the host against a file */
++    struct ssh_conn *sshc = &conn->proto.sshc;
++    int rc;
++    int keytype;
++    size_t keylen;
++    const char *remotekey = libssh2_session_hostkey(sshc->ssh_session,
++                                                    &keylen, &keytype);
++    int keycheck;
++    int keybit;
++
++    if(remotekey) {
++      /*
++       * A subject to figure out is what host name we need to pass in here.
++       * What host name does OpenSSH store in its file if an IDN name is
++       * used?
++       */
++      struct libssh2_knownhost *host;
++      enum curl_khmatch keymatch;
++      curl_sshkeycallback func =
++        data->set.ssh_keyfunc?data->set.ssh_keyfunc:sshkeycallback;
++      struct curl_khkey knownkey;
++      struct curl_khkey *knownkeyp = NULL;
++      struct curl_khkey foundkey;
++
++      keybit = (keytype == LIBSSH2_HOSTKEY_TYPE_RSA)?
++        LIBSSH2_KNOWNHOST_KEY_SSHRSA:LIBSSH2_KNOWNHOST_KEY_SSHDSS;
++
++      keycheck = libssh2_knownhost_check(sshc->kh,
++                                         conn->host.name,
++                                         remotekey, keylen,
++                                         LIBSSH2_KNOWNHOST_TYPE_PLAIN|
++                                         LIBSSH2_KNOWNHOST_KEYENC_RAW|
++                                         keybit,
++                                         &host);
++
++      infof(data, "SSH host check: %d, key: %s\n", keycheck,
++            (keycheck <= LIBSSH2_KNOWNHOST_CHECK_MISMATCH)?
++            host->key:"<none>");
++
++      /* setup 'knownkey' */
++      if(keycheck <= LIBSSH2_KNOWNHOST_CHECK_MISMATCH) {
++        knownkey.key = host->key;
++        knownkey.len = 0;
++        knownkey.keytype = (keytype == LIBSSH2_HOSTKEY_TYPE_RSA)?
++          CURLKHTYPE_RSA : CURLKHTYPE_DSS;
++        knownkeyp = &knownkey;
++      }
++
++      /* setup 'foundkey' */
++      foundkey.key = remotekey;
++      foundkey.len = keylen;
++      foundkey.keytype = (keytype == LIBSSH2_HOSTKEY_TYPE_RSA)?
++        CURLKHTYPE_RSA : CURLKHTYPE_DSS;
++
++      /*
++       * if any of the LIBSSH2_KNOWNHOST_CHECK_* defines and the
++       * curl_khmatch enum are ever modified, we need to introduce a
++       * translation table here!
++       */
++      keymatch = (enum curl_khmatch)keycheck;
++
++      /* Ask the callback how to behave */
++      rc = func(data, knownkeyp, /* from the knownhosts file */
++                &foundkey, /* from the remote host */
++                keymatch, data->set.ssh_keyfunc_userp);
++    }
++    else
++      /* no remotekey means failure! */
++      rc = CURLKHSTAT_REJECT;
++
++    switch(rc) {
++    default: /* unknown return codes will equal reject */
++    case CURLKHSTAT_REJECT:
++      state(conn, SSH_SESSION_FREE);
++    case CURLKHSTAT_DEFER:
++      /* DEFER means bail out but keep the SSH_HOSTKEY state */
++      result = sshc->actualcode = CURLE_PEER_FAILED_VERIFICATION;
++      break;
++    case CURLKHSTAT_FINE:
++    case CURLKHSTAT_FINE_ADD_TO_FILE:
++      /* proceed */
++      if(keycheck != LIBSSH2_KNOWNHOST_CHECK_MATCH) {
++        /* the found host+key didn't match but has been told to be fine
++           anyway so we add it in memory */
++        int addrc = libssh2_knownhost_add(sshc->kh,
++                                          conn->host.name, NULL,
++                                          remotekey, keylen,
++                                          LIBSSH2_KNOWNHOST_TYPE_PLAIN|
++                                          LIBSSH2_KNOWNHOST_KEYENC_RAW|
++                                          keybit, NULL);
++        if(addrc)
++          infof(data, "Warning adding the known host %s failed!\n",
++                conn->host.name);
++        else if(rc == CURLKHSTAT_FINE_ADD_TO_FILE) {
++          /* now we write the entire in-memory list of known hosts to the
++             known_hosts file */
++          int wrc =
++            libssh2_knownhost_writefile(sshc->kh,
++                                        data->set.str[STRING_SSH_KNOWNHOSTS],
++                                        LIBSSH2_KNOWNHOST_FILE_OPENSSH);
++          if(wrc) {
++            infof(data, "Warning, writing %s failed!\n",
++                  data->set.str[STRING_SSH_KNOWNHOSTS]);
++          }
++        }
++      }
++      break;
++    }
++  }
++#else /* HAVE_LIBSSH2_KNOWNHOST_API */
++  (void)conn;
++#endif
++  return result;
++}
++
++
+ /*
+  * ssh_statemach_act() runs the SSH statemachine "one round" and returns.  The
+  * data the pointer 'block' points to will be set to TRUE if the libssh2
+@@ -559,118 +682,9 @@ static CURLcode ssh_statemach_act(struct connectdata *conn, bool *block)
+       }
+     }
+ 
+-#ifdef HAVE_LIBSSH2_KNOWNHOST_API
+-    if(data->set.str[STRING_SSH_KNOWNHOSTS]) {
+-      /* we're asked to verify the host against a file */
+-      int keytype;
+-      size_t keylen;
+-      const char *remotekey = libssh2_session_hostkey(sshc->ssh_session,
+-                                                      &keylen, &keytype);
+-      int keycheck;
+-      int keybit;
+-
+-      if(remotekey) {
+-        /*
+-         * A subject to figure out is what host name we need to pass in here.
+-         * What host name does OpenSSH store in its file if an IDN name is
+-         * used?
+-         */
+-        struct libssh2_knownhost *host;
+-        enum curl_khmatch keymatch;
+-        curl_sshkeycallback func =
+-          data->set.ssh_keyfunc?data->set.ssh_keyfunc:sshkeycallback;
+-        struct curl_khkey knownkey;
+-        struct curl_khkey *knownkeyp = NULL;
+-        struct curl_khkey foundkey;
+-
+-        keybit = (keytype == LIBSSH2_HOSTKEY_TYPE_RSA)?
+-          LIBSSH2_KNOWNHOST_KEY_SSHRSA:LIBSSH2_KNOWNHOST_KEY_SSHDSS;
+-
+-        keycheck = libssh2_knownhost_check(sshc->kh,
+-                                           conn->host.name,
+-                                           remotekey, keylen,
+-                                           LIBSSH2_KNOWNHOST_TYPE_PLAIN|
+-                                           LIBSSH2_KNOWNHOST_KEYENC_RAW|
+-                                           keybit,
+-                                           &host);
+-
+-        infof(data, "SSH host check: %d, key: %s\n", keycheck,
+-              (keycheck <= LIBSSH2_KNOWNHOST_CHECK_MISMATCH)?
+-              host->key:"<none>");
+-
+-        /* setup 'knownkey' */
+-        if(keycheck <= LIBSSH2_KNOWNHOST_CHECK_MISMATCH) {
+-          knownkey.key = host->key;
+-          knownkey.len = 0;
+-          knownkey.keytype = (keytype == LIBSSH2_HOSTKEY_TYPE_RSA)?
+-            CURLKHTYPE_RSA : CURLKHTYPE_DSS;
+-          knownkeyp = &knownkey;
+-        }
+-
+-        /* setup 'foundkey' */
+-        foundkey.key = remotekey;
+-        foundkey.len = keylen;
+-        foundkey.keytype = (keytype == LIBSSH2_HOSTKEY_TYPE_RSA)?
+-          CURLKHTYPE_RSA : CURLKHTYPE_DSS;
+-
+-        /*
+-         * if any of the LIBSSH2_KNOWNHOST_CHECK_* defines and the
+-         * curl_khmatch enum are ever modified, we need to introduce a
+-         * translation table here!
+-         */
+-        keymatch = (enum curl_khmatch)keycheck;
+-
+-        /* Ask the callback how to behave */
+-        rc = func(data, knownkeyp, /* from the knownhosts file */
+-                  &foundkey, /* from the remote host */
+-                  keymatch, data->set.ssh_keyfunc_userp);
+-      }
+-      else
+-        /* no remotekey means failure! */
+-        rc = CURLKHSTAT_REJECT;
+-
+-      switch(rc) {
+-      default: /* unknown return codes will equal reject */
+-      case CURLKHSTAT_REJECT:
+-        state(conn, SSH_SESSION_FREE);
+-      case CURLKHSTAT_DEFER:
+-        /* DEFER means bail out but keep the SSH_HOSTKEY state */
+-        result = sshc->actualcode = CURLE_PEER_FAILED_VERIFICATION;
+-        break;
+-      case CURLKHSTAT_FINE:
+-      case CURLKHSTAT_FINE_ADD_TO_FILE:
+-        /* proceed */
+-        if(keycheck != LIBSSH2_KNOWNHOST_CHECK_MATCH) {
+-          /* the found host+key didn't match but has been told to be fine
+-             anyway so we add it in memory */
+-          int addrc = libssh2_knownhost_add(sshc->kh,
+-                                            conn->host.name, NULL,
+-                                            remotekey, keylen,
+-                                            LIBSSH2_KNOWNHOST_TYPE_PLAIN|
+-                                            LIBSSH2_KNOWNHOST_KEYENC_RAW|
+-                                            keybit, NULL);
+-          if(addrc)
+-            infof(data, "Warning adding the known host %s failed!\n",
+-                  conn->host.name);
+-          else if(rc == CURLKHSTAT_FINE_ADD_TO_FILE) {
+-            /* now we write the entire in-memory list of known hosts to the
+-               known_hosts file */
+-            int wrc =
+-              libssh2_knownhost_writefile(sshc->kh,
+-                                          data->set.str[STRING_SSH_KNOWNHOSTS],
+-                                          LIBSSH2_KNOWNHOST_FILE_OPENSSH);
+-            if(wrc) {
+-              infof(data, "Warning, writing %s failed!\n",
+-                    data->set.str[STRING_SSH_KNOWNHOSTS]);
+-            }
+-          }
+-        }
+-        break;
+-      }
+-    }
+-#endif /* HAVE_LIBSSH2_KNOWNHOST_API */
+-
+-    state(conn, SSH_AUTHLIST);
++    result = ssh_knownhost(conn);
++    if(!result)
++      state(conn, SSH_AUTHLIST);
+     break;
+ 
+   case SSH_AUTHLIST:
+-- 
+1.7.1
+
+
+From fbf9d6fec3a4c52b49860b98f2ef3af44818a854 Mon Sep 17 00:00:00 2001
+From: Daniel Stenberg <daniel@haxx.se>
+Date: Mon, 5 Dec 2011 22:20:48 +0100
+Subject: [PATCH 3/6] SSH: fix CURLOPT_SSH_HOST_PUBLIC_KEY_MD5
+
+When a 32 digit hex key is given as a hostkey md5 checksum, the code
+would still run it against the knownhost check and not properly
+acknowledge that the md5 should then be the sole guide for.
+
+The verbose output now includes the evaluated MD5 hostkey checksum.
+
+Some related source code comments were also updated.
+
+Bug: http://curl.haxx.se/bug/view.cgi?id=3451592
+Reported by: Reza Arbab
+
+[upstream commit 347f951c3909dea589270366ea90f1af9b40f65b]
+
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/ssh.c |   40 ++++++++++++++--------------------------
+ 1 files changed, 14 insertions(+), 26 deletions(-)
+
+diff --git a/lib/ssh.c b/lib/ssh.c
+index 645d519..04c098f 100644
+--- a/lib/ssh.c
++++ b/lib/ssh.c
+@@ -606,10 +606,8 @@ static CURLcode ssh_statemach_act(struct connectdata *conn, bool *block)
+   struct SSHPROTO *sftp_scp = data->state.proto.ssh;
+   struct ssh_conn *sshc = &conn->proto.sshc;
+   curl_socket_t sock = conn->sock[FIRSTSOCKET];
+-#ifdef CURL_LIBSSH2_DEBUG
+   const char *fingerprint;
+-#endif /* CURL_LIBSSH2_DEBUG */
+-  const char *host_public_key_md5;
++  char md5buffer[33];
+   int rc = LIBSSH2_ERROR_NONE, i;
+   int err;
+   int seekerr = CURL_SEEKFUNC_OK;
+@@ -640,49 +638,39 @@ static CURLcode ssh_statemach_act(struct connectdata *conn, bool *block)
+ 
+     /* fall-through */
+   case SSH_HOSTKEY:
+-
+-#ifdef CURL_LIBSSH2_DEBUG
+     /*
+      * Before we authenticate we should check the hostkey's fingerprint
+      * against our known hosts. How that is handled (reading from file,
+-     * whatever) is up to us. As for know not much is implemented, besides
+-     * showing how to get the fingerprint.
++     * whatever) is up to us.
+      */
+     fingerprint = libssh2_hostkey_hash(sshc->ssh_session,
+                                        LIBSSH2_HOSTKEY_HASH_MD5);
+ 
+     /* The fingerprint points to static storage (!), don't free() it. */
+-    infof(data, "Fingerprint: ");
+-    for (rc = 0; rc < 16; rc++) {
+-      infof(data, "%02X ", (unsigned char) fingerprint[rc]);
+-    }
+-    infof(data, "\n");
+-#endif /* CURL_LIBSSH2_DEBUG */
++    for(i = 0; i < 16; i++)
++      snprintf(&md5buffer[i*2], 3, "%02x", (unsigned char) fingerprint[i]);
++    infof(data, "SSH MD5 fingerprint: %s\n", md5buffer);
+ 
+     /* Before we authenticate we check the hostkey's MD5 fingerprint
+-     * against a known fingerprint, if available.  This implementation pulls
+-     * it from the curl option.
++     * against a known fingerprint, if available.
+      */
+     if(data->set.str[STRING_SSH_HOST_PUBLIC_KEY_MD5] &&
+        strlen(data->set.str[STRING_SSH_HOST_PUBLIC_KEY_MD5]) == 32) {
+-      char buf[33];
+-      host_public_key_md5 = libssh2_hostkey_hash(sshc->ssh_session,
+-                                                 LIBSSH2_HOSTKEY_HASH_MD5);
+-      for (i = 0; i < 16; i++)
+-        snprintf(&buf[i*2], 3, "%02x",
+-                 (unsigned char) host_public_key_md5[i]);
+-      if(!strequal(buf, data->set.str[STRING_SSH_HOST_PUBLIC_KEY_MD5])) {
++      if(!strequal(md5buffer, data->set.str[STRING_SSH_HOST_PUBLIC_KEY_MD5])) {
+         failf(data,
+               "Denied establishing ssh session: mismatch md5 fingerprint. "
+               "Remote %s is not equal to %s",
+-              buf, data->set.str[STRING_SSH_HOST_PUBLIC_KEY_MD5]);
++              md5buffer, data->set.str[STRING_SSH_HOST_PUBLIC_KEY_MD5]);
+         state(conn, SSH_SESSION_FREE);
+-        sshc->actualcode = CURLE_PEER_FAILED_VERIFICATION;
+-        break;
++        result = sshc->actualcode = CURLE_PEER_FAILED_VERIFICATION;
+       }
++      else
++        infof(data, "MD5 checksum match!\n");
++      /* as we already matched, we skip the check for known hosts */
+     }
++    else
++      result = ssh_knownhost(conn);
+ 
+-    result = ssh_knownhost(conn);
+     if(!result)
+       state(conn, SSH_AUTHLIST);
+     break;
+-- 
+1.7.1
+
+
+From b18c9395723bfb2c0f1d5503a67719ad194a56f9 Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Wed, 12 Sep 2012 16:06:18 +0200
+Subject: [PATCH 4/6] ssh: move the fingerprint checking code to a separate fnc
+
+[upstream commit ce515e993fe7bc7e95549317fe5180b196454d4c]
+---
+ lib/ssh.c |   70 ++++++++++++++++++++++++++++++++++---------------------------
+ 1 files changed, 39 insertions(+), 31 deletions(-)
+
+diff --git a/lib/ssh.c b/lib/ssh.c
+index 04c098f..14ef887 100644
+--- a/lib/ssh.c
++++ b/lib/ssh.c
+@@ -591,6 +591,43 @@ static CURLcode ssh_knownhost(struct connectdata *conn)
+   return result;
+ }
+ 
++static bool ssh_check_fingerprint(struct connectdata *conn)
++{
++  struct ssh_conn *sshc = &conn->proto.sshc;
++  struct SessionHandle *data = conn->data;
++  const char *pubkey_md5 = data->set.str[STRING_SSH_HOST_PUBLIC_KEY_MD5];
++  char md5buffer[33];
++  int i;
++
++  const char *fingerprint = libssh2_hostkey_hash(sshc->ssh_session,
++      LIBSSH2_HOSTKEY_HASH_MD5);
++
++  /* The fingerprint points to static storage (!), don't free() it. */
++  for(i = 0; i < 16; i++)
++    snprintf(&md5buffer[i*2], 3, "%02x", (unsigned char) fingerprint[i]);
++  infof(data, "SSH MD5 fingerprint: %s\n", md5buffer);
++
++  /* Before we authenticate we check the hostkey's MD5 fingerprint
++   * against a known fingerprint, if available.
++   */
++  if(pubkey_md5 && strlen(pubkey_md5) == 32) {
++    if(!strequal(md5buffer, pubkey_md5)) {
++      failf(data,
++          "Denied establishing ssh session: mismatch md5 fingerprint. "
++          "Remote %s is not equal to %s", md5buffer, pubkey_md5);
++      state(conn, SSH_SESSION_FREE);
++      sshc->actualcode = CURLE_PEER_FAILED_VERIFICATION;
++      return sshc->actualcode;
++    }
++    else {
++      infof(data, "MD5 checksum match!\n");
++      /* as we already matched, we skip the check for known hosts */
++      return CURLE_OK;
++    }
++  }
++  else
++    return ssh_knownhost(conn);
++}
+ 
+ /*
+  * ssh_statemach_act() runs the SSH statemachine "one round" and returns.  The
+@@ -606,9 +643,7 @@ static CURLcode ssh_statemach_act(struct connectdata *conn, bool *block)
+   struct SSHPROTO *sftp_scp = data->state.proto.ssh;
+   struct ssh_conn *sshc = &conn->proto.sshc;
+   curl_socket_t sock = conn->sock[FIRSTSOCKET];
+-  const char *fingerprint;
+-  char md5buffer[33];
+-  int rc = LIBSSH2_ERROR_NONE, i;
++  int rc = LIBSSH2_ERROR_NONE;
+   int err;
+   int seekerr = CURL_SEEKFUNC_OK;
+   *block = 0; /* we're not blocking by default */
+@@ -643,34 +678,7 @@ static CURLcode ssh_statemach_act(struct connectdata *conn, bool *block)
+      * against our known hosts. How that is handled (reading from file,
+      * whatever) is up to us.
+      */
+-    fingerprint = libssh2_hostkey_hash(sshc->ssh_session,
+-                                       LIBSSH2_HOSTKEY_HASH_MD5);
+-
+-    /* The fingerprint points to static storage (!), don't free() it. */
+-    for(i = 0; i < 16; i++)
+-      snprintf(&md5buffer[i*2], 3, "%02x", (unsigned char) fingerprint[i]);
+-    infof(data, "SSH MD5 fingerprint: %s\n", md5buffer);
+-
+-    /* Before we authenticate we check the hostkey's MD5 fingerprint
+-     * against a known fingerprint, if available.
+-     */
+-    if(data->set.str[STRING_SSH_HOST_PUBLIC_KEY_MD5] &&
+-       strlen(data->set.str[STRING_SSH_HOST_PUBLIC_KEY_MD5]) == 32) {
+-      if(!strequal(md5buffer, data->set.str[STRING_SSH_HOST_PUBLIC_KEY_MD5])) {
+-        failf(data,
+-              "Denied establishing ssh session: mismatch md5 fingerprint. "
+-              "Remote %s is not equal to %s",
+-              md5buffer, data->set.str[STRING_SSH_HOST_PUBLIC_KEY_MD5]);
+-        state(conn, SSH_SESSION_FREE);
+-        result = sshc->actualcode = CURLE_PEER_FAILED_VERIFICATION;
+-      }
+-      else
+-        infof(data, "MD5 checksum match!\n");
+-      /* as we already matched, we skip the check for known hosts */
+-    }
+-    else
+-      result = ssh_knownhost(conn);
+-
++    result = ssh_check_fingerprint(conn);
+     if(!result)
+       state(conn, SSH_AUTHLIST);
+     break;
+-- 
+1.7.1
+
+
+From 1d8ff74291fb602093943410490166f081c7914a Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Wed, 12 Sep 2012 16:18:36 +0200
+Subject: [PATCH 5/6] ssh: do not crash if MD5 fingerprint is not provided by libssh2
+
+The MD5 fingerprint cannot be computed when running in FIPS mode.
+
+[upstream commit f05e51362f310cb04b0ad8d086b9cf693aad5c9d]
+---
+ lib/ssh.c |   22 ++++++++++++++--------
+ 1 files changed, 14 insertions(+), 8 deletions(-)
+
+diff --git a/lib/ssh.c b/lib/ssh.c
+index 14ef887..e6ed4bd 100644
+--- a/lib/ssh.c
++++ b/lib/ssh.c
+@@ -602,19 +602,25 @@ static bool ssh_check_fingerprint(struct connectdata *conn)
+   const char *fingerprint = libssh2_hostkey_hash(sshc->ssh_session,
+       LIBSSH2_HOSTKEY_HASH_MD5);
+ 
+-  /* The fingerprint points to static storage (!), don't free() it. */
+-  for(i = 0; i < 16; i++)
+-    snprintf(&md5buffer[i*2], 3, "%02x", (unsigned char) fingerprint[i]);
+-  infof(data, "SSH MD5 fingerprint: %s\n", md5buffer);
++  if(fingerprint) {
++    /* The fingerprint points to static storage (!), don't free() it. */
++    for(i = 0; i < 16; i++)
++      snprintf(&md5buffer[i*2], 3, "%02x", (unsigned char) fingerprint[i]);
++    infof(data, "SSH MD5 fingerprint: %s\n", md5buffer);
++  }
+ 
+   /* Before we authenticate we check the hostkey's MD5 fingerprint
+    * against a known fingerprint, if available.
+    */
+   if(pubkey_md5 && strlen(pubkey_md5) == 32) {
+-    if(!strequal(md5buffer, pubkey_md5)) {
+-      failf(data,
+-          "Denied establishing ssh session: mismatch md5 fingerprint. "
+-          "Remote %s is not equal to %s", md5buffer, pubkey_md5);
++    if(!fingerprint || !strequal(md5buffer, pubkey_md5)) {
++      if(fingerprint)
++        failf(data,
++            "Denied establishing ssh session: mismatch md5 fingerprint. "
++            "Remote %s is not equal to %s", md5buffer, pubkey_md5);
++      else
++        failf(data,
++            "Denied establishing ssh session: md5 fingerprint not available");
+       state(conn, SSH_SESSION_FREE);
+       sshc->actualcode = CURLE_PEER_FAILED_VERIFICATION;
+       return sshc->actualcode;
+-- 
+1.7.1
+
+
+From 7b654685f083cfff1b068a5dc6fd505972f3f5de Mon Sep 17 00:00:00 2001
+From: Marc Hoersken <info@marc-hoersken.de>
+Date: Fri, 14 Sep 2012 14:48:55 +0200
+Subject: [PATCH 6/6] ssh.c: Fixed warning: implicit conversion from enumeration type
+
+[upstream commit 1ab6c353635760e8e25bacc13ae0cab2f97f7338]
+
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/ssh.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/lib/ssh.c b/lib/ssh.c
+index e6ed4bd..e7b75af 100644
+--- a/lib/ssh.c
++++ b/lib/ssh.c
+@@ -591,7 +591,7 @@ static CURLcode ssh_knownhost(struct connectdata *conn)
+   return result;
+ }
+ 
+-static bool ssh_check_fingerprint(struct connectdata *conn)
++static CURLcode ssh_check_fingerprint(struct connectdata *conn)
+ {
+   struct ssh_conn *sshc = &conn->proto.sshc;
+   struct SessionHandle *data = conn->data;
+-- 
+1.7.1
+

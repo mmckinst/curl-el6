@@ -1,0 +1,382 @@
+From b5f873adbe37acf3d3e0e3fec3a6896fd7562c83 Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Wed, 3 Aug 2011 12:48:49 +0200
+Subject: [PATCH 1/2] curl - rhbz #719938
+
+---
+ docs/libcurl/curl_easy_setopt.3  |    8 ++++++
+ docs/libcurl/symbols-in-versions |    4 +++
+ include/curl/curl.h              |    7 +++++
+ lib/Makefile.inc                 |    4 +-
+ lib/curl_gssapi.c                |   44 ++++++++++++++++++++++++++++++++++++
+ lib/curl_gssapi.h                |   46 ++++++++++++++++++++++++++++++++++++++
+ lib/http_negotiate.c             |    6 ++++-
+ lib/krb5.c                       |    6 ++++-
+ lib/socks_gssapi.c               |    7 ++++-
+ lib/url.c                        |    6 +++++
+ lib/urldata.h                    |    3 ++
+ 11 files changed, 135 insertions(+), 6 deletions(-)
+ create mode 100644 lib/curl_gssapi.c
+ create mode 100644 lib/curl_gssapi.h
+
+diff --git a/docs/libcurl/curl_easy_setopt.3 b/docs/libcurl/curl_easy_setopt.3
+index 0e13cdc..d633b16 100644
+--- a/docs/libcurl/curl_easy_setopt.3
++++ b/docs/libcurl/curl_easy_setopt.3
+@@ -1724,6 +1724,14 @@ of these, 'private' will be used. Set the string to NULL to disable kerberos
+ support for FTP.
+ 
+ (This option was known as CURLOPT_KRB4LEVEL up to 7.16.3)
++.IP CURLOPT_GSSAPI_DELEGATION
++Set the parameter to CURLGSSAPI_DELEGATION_FLAG to allow unconditional GSSAPI
++credential delegation.  The delegation is disabled by default since 7.21.7.
++Set the parameter to CURLGSSAPI_DELEGATION_POLICY_FLAG to delegate only if
++the OK-AS-DELEGATE flag is set in the service ticket in case this feature is
++supported by the GSSAPI implementation and the definition of
++GSS_C_DELEG_POLICY_FLAG was available at compile-time.
++(Added in 7.21.8)
+ .SH SSH OPTIONS
+ .IP CURLOPT_SSH_AUTH_TYPES
+ Pass a long set to a bitmask consisting of one or more of
+diff --git a/docs/libcurl/symbols-in-versions b/docs/libcurl/symbols-in-versions
+index 1b53eea..a397303 100644
+--- a/docs/libcurl/symbols-in-versions
++++ b/docs/libcurl/symbols-in-versions
+@@ -127,6 +127,9 @@ CURLFTPSSL_TRY                  7.11.0        7.17.0
+ CURLFTP_CREATE_DIR              7.19.4
+ CURLFTP_CREATE_DIR_NONE         7.19.4
+ CURLFTP_CREATE_DIR_RETRY        7.19.4
++CURLGSSAPI_DELEGATION_FLAG      7.21.8
++CURLGSSAPI_DELEGATION_NONE      7.21.8
++CURLGSSAPI_DELEGATION_POLICY_FLAG 7.21.8
+ CURLINFO_APPCONNECT_TIME        7.19.0
+ CURLINFO_CERTINFO               7.19.1
+ CURLINFO_CONDITION_UNMET        7.19.4
+@@ -231,6 +234,7 @@ CURLOPT_FTP_SSL                 7.11.0        7.16.4
+ CURLOPT_FTP_SSL_CCC             7.16.1
+ CURLOPT_FTP_USE_EPRT            7.10.5
+ CURLOPT_FTP_USE_EPSV            7.9.2
++CURLOPT_GSSAPI_DELEGATION       7.21.8
+ CURLOPT_HEADER                  7.1
+ CURLOPT_HEADERFUNCTION          7.7.2
+ CURLOPT_HTTP200ALIASES          7.10.3
+diff --git a/include/curl/curl.h b/include/curl/curl.h
+index bcc4d13..2b97411 100644
+--- a/include/curl/curl.h
++++ b/include/curl/curl.h
+@@ -508,6 +508,10 @@ typedef enum {
+ #define CURLSSH_AUTH_KEYBOARD  (1<<3) /* keyboard interactive */
+ #define CURLSSH_AUTH_DEFAULT CURLSSH_AUTH_ANY
+ 
++#define CURLGSSAPI_DELEGATION_NONE        0      /* no delegation (default) */
++#define CURLGSSAPI_DELEGATION_POLICY_FLAG (1<<0) /* if permitted by policy */
++#define CURLGSSAPI_DELEGATION_FLAG        (1<<1) /* delegate always */
++
+ #define CURL_ERROR_SIZE 256
+ 
+ struct curl_khkey {
+@@ -1280,6 +1284,9 @@ typedef enum {
+   /* set the SSH host key callback custom pointer */
+   CINIT(SSH_KEYDATA, OBJECTPOINT, 185),
+ 
++  /* allow GSSAPI credential delegation */
++  CINIT(GSSAPI_DELEGATION, LONG, 210),
++
+   CURLOPT_LASTENTRY /* the last unused */
+ } CURLoption;
+ 
+diff --git a/lib/Makefile.inc b/lib/Makefile.inc
+index c440ab5..d56cdf7 100644
+--- a/lib/Makefile.inc
++++ b/lib/Makefile.inc
+@@ -11,7 +11,7 @@ CSOURCES = file.c timeval.c base64.c hostip.c progress.c formdata.c	\
+   inet_ntop.c parsedate.c select.c gtls.c sslgen.c tftp.c splay.c	\
+   strdup.c socks.c ssh.c nss.c qssl.c rawstr.c curl_addrinfo.c          \
+   socks_gssapi.c socks_sspi.c curl_sspi.c slist.c nonblock.c		\
+-  curl_memrchr.c
++  curl_memrchr.c curl_gssapi.c
+ 
+ HHEADERS = arpa_telnet.h netrc.h file.h timeval.h qssl.h hostip.h	\
+   progress.h formdata.h cookie.h http.h sendf.h ftp.h url.h dict.h	\
+@@ -23,5 +23,5 @@ HHEADERS = arpa_telnet.h netrc.h file.h timeval.h qssl.h hostip.h	\
+   transfer.h select.h easyif.h multiif.h parsedate.h sslgen.h gtls.h	\
+   tftp.h sockaddr.h splay.h strdup.h setup_once.h socks.h ssh.h nssg.h	\
+   curl_base64.h rawstr.h curl_addrinfo.h curl_sspi.h slist.h nonblock.h	\
+-  curl_memrchr.h
++  curl_memrchr.h curl_gssapi.h
+ 
+diff --git a/lib/curl_gssapi.c b/lib/curl_gssapi.c
+new file mode 100644
+index 0000000..e55c9cc
+--- /dev/null
++++ b/lib/curl_gssapi.c
+@@ -0,0 +1,44 @@
++/***************************************************************************
++ *                                  _   _ ____  _
++ *  Project                     ___| | | |  _ \| |
++ *                             / __| | | | |_) | |
++ *                            | (__| |_| |  _ <| |___
++ *                             \___|\___/|_| \_\_____|
++ *
++ * Copyright (C) 2011, Daniel Stenberg, <daniel@haxx.se>, et al.
++ *
++ * This software is licensed as described in the file COPYING, which
++ * you should have received as part of this distribution. The terms
++ * are also available at http://curl.haxx.se/docs/copyright.html.
++ *
++ * You may opt to use, copy, modify, merge, publish, distribute and/or sell
++ * copies of the Software, and permit persons to whom the Software is
++ * furnished to do so, under the terms of the COPYING file.
++ *
++ * This software is distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY
++ * KIND, either express or implied.
++ *
++ ***************************************************************************/
++
++#include "setup.h"
++
++#ifdef HAVE_GSSAPI
++
++#include "curl_gssapi.h"
++
++void Curl_gss_req_flags(OM_uint32 *req_flags, const struct SessionHandle *data)
++{
++  if(data->set.gssapi_delegation & CURLGSSAPI_DELEGATION_POLICY_FLAG) {
++#ifdef GSS_C_DELEG_POLICY_FLAG
++    *req_flags |= GSS_C_DELEG_POLICY_FLAG;
++#else
++    infof(data, "warning: support for CURLGSSAPI_DELEGATION_POLICY_FLAG not "
++        "compiled in\n");
++#endif
++  }
++
++  if(data->set.gssapi_delegation & CURLGSSAPI_DELEGATION_FLAG)
++    *req_flags |= GSS_C_DELEG_FLAG;
++}
++
++#endif /* HAVE_GSSAPI */
+diff --git a/lib/curl_gssapi.h b/lib/curl_gssapi.h
+new file mode 100644
+index 0000000..02aa527
+--- /dev/null
++++ b/lib/curl_gssapi.h
+@@ -0,0 +1,46 @@
++#ifndef HEADER_CURL_GSSAPI_H
++#define HEADER_CURL_GSSAPI_H
++/***************************************************************************
++ *                                  _   _ ____  _
++ *  Project                     ___| | | |  _ \| |
++ *                             / __| | | | |_) | |
++ *                            | (__| |_| |  _ <| |___
++ *                             \___|\___/|_| \_\_____|
++ *
++ * Copyright (C) 2011, Daniel Stenberg, <daniel@haxx.se>, et al.
++ *
++ * This software is licensed as described in the file COPYING, which
++ * you should have received as part of this distribution. The terms
++ * are also available at http://curl.haxx.se/docs/copyright.html.
++ *
++ * You may opt to use, copy, modify, merge, publish, distribute and/or sell
++ * copies of the Software, and permit persons to whom the Software is
++ * furnished to do so, under the terms of the COPYING file.
++ *
++ * This software is distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY
++ * KIND, either express or implied.
++ *
++ ***************************************************************************/
++
++#include "setup.h"
++#include "urldata.h"
++
++#ifdef HAVE_GSSAPI
++
++#ifdef HAVE_GSSGNU
++#  include <gss.h>
++#elif defined HAVE_GSSMIT
++   /* MIT style */
++#  include <gssapi/gssapi.h>
++#  include <gssapi/gssapi_generic.h>
++#  include <gssapi/gssapi_krb5.h>
++#else
++   /* Heimdal-style */
++#  include <gssapi.h>
++#endif
++
++void Curl_gss_req_flags(OM_uint32 *req_flags, const struct SessionHandle *data);
++
++#endif /* HAVE_GSSAPI */
++
++#endif /* HEADER_CURL_GSSAPI_H */
+diff --git a/lib/http_negotiate.c b/lib/http_negotiate.c
+index 29ad408..5d8fcc4 100644
+--- a/lib/http_negotiate.c
++++ b/lib/http_negotiate.c
+@@ -41,6 +41,7 @@
+ #include "curl_base64.h"
+ #include "http_negotiate.h"
+ #include "curl_memory.h"
++#include "curl_gssapi.h"
+ 
+ #ifdef HAVE_SPNEGO
+ #  include <spnegohelp.h>
+@@ -144,6 +145,9 @@ int Curl_input_negotiate(struct connectdata *conn, bool proxy,
+   bool gss;
+   const char* protocol;
+ 
++  OM_uint32 req_flags = 0;
++  Curl_gss_req_flags(&req_flags, conn->data);
++
+   while(*header && ISSPACE(*header))
+     header++;
+   if(checkprefix("GSS-Negotiate", header)) {
+@@ -243,7 +247,7 @@ int Curl_input_negotiate(struct connectdata *conn, bool proxy,
+                                       &neg_ctx->context,
+                                       neg_ctx->server_name,
+                                       GSS_C_NO_OID,
+-                                      0,
++                                      req_flags,
+                                       0,
+                                       GSS_C_NO_CHANNEL_BINDINGS,
+                                       &input_token,
+diff --git a/lib/krb5.c b/lib/krb5.c
+index e763912..e9d0720 100644
+--- a/lib/krb5.c
++++ b/lib/krb5.c
+@@ -62,6 +62,7 @@
+ #include "sendf.h"
+ #include "krb4.h"
+ #include "curl_memory.h"
++#include "curl_gssapi.h"
+ 
+ #define _MPRINTF_REPLACE /* use our functions only */
+ #include <curl/mprintf.h>
+@@ -172,6 +173,9 @@ krb5_auth(void *app_data, struct connectdata *conn)
+   gss_ctx_id_t *context = app_data;
+   struct gss_channel_bindings_struct chan;
+ 
++  OM_uint32 req_flags = GSS_C_MUTUAL_FLAG | GSS_C_REPLAY_FLAG;
++  Curl_gss_req_flags(&req_flags, data);
++
+   if(getsockname(conn->sock[FIRSTSOCKET],
+                  (struct sockaddr *)LOCAL_ADDR, &l) < 0)
+     perror("getsockname()");
+@@ -230,7 +234,7 @@ krb5_auth(void *app_data, struct connectdata *conn)
+                                  context,
+                                  gssname,
+                                  GSS_C_NO_OID,
+-                                 GSS_C_MUTUAL_FLAG | GSS_C_REPLAY_FLAG,
++                                 req_flags,
+                                  0,
+                                  &chan,
+                                  gssresp,
+diff --git a/lib/socks_gssapi.c b/lib/socks_gssapi.c
+index cb260e7..912b343 100644
+--- a/lib/socks_gssapi.c
++++ b/lib/socks_gssapi.c
+@@ -43,6 +43,7 @@
+ #include "connect.h"
+ #include "timeval.h"
+ #include "socks.h"
++#include "curl_gssapi.h"
+ 
+ static gss_ctx_id_t     gss_context = GSS_C_NO_CONTEXT;
+ 
+@@ -138,6 +139,9 @@ CURLcode Curl_SOCKS5_gssapi_negotiate(int sockindex,
+   unsigned char socksreq[4]; /* room for gssapi exchange header only */
+   char *serviceptr = data->set.str[STRING_SOCKS5_GSSAPI_SERVICE];
+ 
++  OM_uint32 req_flags = GSS_C_MUTUAL_FLAG | GSS_C_REPLAY_FLAG;
++  Curl_gss_req_flags(&req_flags, data);
++
+   /* get timeout */
+   timeout = Curl_timeleft(conn, NULL, TRUE);
+ 
+@@ -188,8 +192,7 @@ CURLcode Curl_SOCKS5_gssapi_negotiate(int sockindex,
+                                             GSS_C_NO_CREDENTIAL,
+                                             &gss_context, server,
+                                             GSS_C_NULL_OID,
+-                                            GSS_C_MUTUAL_FLAG |
+-                                            GSS_C_REPLAY_FLAG,
++                                            req_flags,
+                                             0,
+                                             NULL,
+                                             gss_token,
+diff --git a/lib/url.c b/lib/url.c
+index adecd4f..76b6cbd 100644
+--- a/lib/url.c
++++ b/lib/url.c
+@@ -1929,6 +1929,12 @@ CURLcode Curl_setopt(struct SessionHandle *data, CURLoption option,
+                        va_arg(param, char *));
+     data->set.krb = (bool)(NULL != data->set.str[STRING_KRB_LEVEL]);
+     break;
++  case CURLOPT_GSSAPI_DELEGATION:
++    /*
++     * GSSAPI credential delegation
++     */
++    data->set.gssapi_delegation = va_arg(param, long);
++    break;
+   case CURLOPT_SSL_VERIFYPEER:
+     /*
+      * Enable peer SSL verifying.
+diff --git a/lib/urldata.h b/lib/urldata.h
+index 9c4f38b..37176ff 100644
+--- a/lib/urldata.h
++++ b/lib/urldata.h
+@@ -1582,6 +1582,9 @@ struct UserDefined {
+ #if defined(HAVE_GSSAPI) || defined(USE_WINDOWS_SSPI)
+   long socks5_gssapi_nec; /* flag to support nec socks5 server */
+ #endif
++
++  long gssapi_delegation; /* GSSAPI credential delegation, see the
++                             documentation of CURLOPT_GSSAPI_DELEGATION */
+ };
+ 
+ struct Names {
+-- 
+1.7.4.4
+
+
+From 5c0636b5b3c8c022200bc369fd5dbb0ab0f5ee4d Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Wed, 3 Aug 2011 18:00:07 +0200
+Subject: [PATCH 2/2] curl_gssapi: add a missing include of sendf.h
+
+... to avoid build failure when GSS_C_DELEG_POLICY_FLAG is not defined.
+
+Reported by: Paul Howarth
+---
+ lib/curl_gssapi.c |    3 ++-
+ lib/curl_gssapi.h |    2 +-
+ 2 files changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/lib/curl_gssapi.c b/lib/curl_gssapi.c
+index e55c9cc..914d1a0 100644
+--- a/lib/curl_gssapi.c
++++ b/lib/curl_gssapi.c
+@@ -25,8 +25,9 @@
+ #ifdef HAVE_GSSAPI
+ 
+ #include "curl_gssapi.h"
++#include "sendf.h"
+ 
+-void Curl_gss_req_flags(OM_uint32 *req_flags, const struct SessionHandle *data)
++void Curl_gss_req_flags(OM_uint32 *req_flags, struct SessionHandle *data)
+ {
+   if(data->set.gssapi_delegation & CURLGSSAPI_DELEGATION_POLICY_FLAG) {
+ #ifdef GSS_C_DELEG_POLICY_FLAG
+diff --git a/lib/curl_gssapi.h b/lib/curl_gssapi.h
+index 02aa527..c8ffefc 100644
+--- a/lib/curl_gssapi.h
++++ b/lib/curl_gssapi.h
+@@ -39,7 +39,7 @@
+ #  include <gssapi.h>
+ #endif
+ 
+-void Curl_gss_req_flags(OM_uint32 *req_flags, const struct SessionHandle *data);
++void Curl_gss_req_flags(OM_uint32 *req_flags, struct SessionHandle *data);
+ 
+ #endif /* HAVE_GSSAPI */
+ 
+-- 
+1.7.4.4
+

@@ -1,0 +1,36 @@
+From acfe2c1a0e96ff794842e62e940ef3aac955fbcf Mon Sep 17 00:00:00 2001
+From: Daniel Stenberg <daniel@haxx.se>
+Date: Wed, 11 Jul 2012 23:13:52 +0200
+Subject: [PATCH] HEAD: don't force-close after response-headers
+
+A HEAD response has no body length and gets the headers like the
+corresponding GET would so it should not get closed after the response
+based on the same rules. This mistake caused connections that did HEAD
+to get closed too often without a valid reason.
+
+Bug: http://curl.haxx.se/bug/view.cgi?id=3542731
+Reported by: Eelco Dolstra
+
+Upstream-commit: 85ce195f75e16d59840e3de74bc5b2846630cabd
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/transfer.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/lib/transfer.c b/lib/transfer.c
+index 69f267c..6ba617d 100644
+--- a/lib/transfer.c
++++ b/lib/transfer.c
+@@ -946,7 +946,8 @@ static CURLcode readwrite_http_headers(struct SessionHandle *data,
+         k->header = FALSE; /* no more header to parse! */
+ 
+         if((k->size == -1) && !k->chunk && !conn->bits.close &&
+-           (conn->httpversion >= 11) ) {
++           (conn->httpversion >= 11) &&
++           (data->set.httpreq != HTTPREQ_HEAD)) {
+           /* On HTTP 1.1, when connection is not to get closed, but no
+              Content-Length nor Content-Encoding chunked have been
+              received, according to RFC2616 section 4.4 point 5, we
+-- 
+2.1.0
+

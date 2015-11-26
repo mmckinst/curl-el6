@@ -1,0 +1,707 @@
+From 2411b0eaa63ea7d48343469afd20cf23788b05d3 Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Thu, 5 Nov 2009 15:41:31 +0000
+Subject: [PATCH 1/6] - Dropped misleading timeouts in libcurl-NSS and made sure the SSL socket works in non-blocking mode.
+
+[upstream commit 676e0c28e7f6c3565d500ed17c0605359595016e]
+
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/nss.c |   42 ++++++++++++++----------------------------
+ 1 files changed, 14 insertions(+), 28 deletions(-)
+
+diff --git a/lib/nss.c b/lib/nss.c
+index f44388f..8da5760 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -1149,6 +1149,7 @@ CURLcode Curl_nss_connect(struct connectdata *conn, int sockindex)
+   struct ssl_connect_data *connssl = &conn->ssl[sockindex];
+   CURLcode curlerr;
+   const int *cipher_to_enable;
++  PRSocketOptionData sock_opt;
+   long time_left;
+   PRUint32 timeout;
+ 
+@@ -1202,6 +1203,12 @@ CURLcode Curl_nss_connect(struct connectdata *conn, int sockindex)
+     goto error;
+   model = SSL_ImportFD(NULL, model);
+ 
++  /* make the socket nonblocking */
++  sock_opt.option = PR_SockOpt_Nonblocking;
++  sock_opt.value.non_blocking = PR_TRUE;
++  if(PR_SetSocketOption(model, &sock_opt) != SECSuccess)
++    goto error;
++
+   if(SSL_OptionSet(model, SSL_SECURITY, PR_TRUE) != SECSuccess)
+     goto error;
+   if(SSL_OptionSet(model, SSL_HANDSHAKE_AS_SERVER, PR_FALSE) != SECSuccess)
+@@ -1446,24 +1453,14 @@ int Curl_nss_send(struct connectdata *conn,  /* connection data */
+                   size_t len)                /* amount to write */
+ {
+   PRInt32 err;
+-  struct SessionHandle *data = conn->data;
+-  PRInt32 timeout;
+   int rc;
+ 
+-  if(data->set.timeout)
+-    timeout = PR_MillisecondsToInterval((PRUint32)data->set.timeout);
+-  else
+-    timeout = PR_MillisecondsToInterval(DEFAULT_CONNECT_TIMEOUT);
+-
+-  rc = PR_Send(conn->ssl[sockindex].handle, mem, (int)len, 0, timeout);
++  rc = PR_Send(conn->ssl[sockindex].handle, mem, (int)len, 0, -1);
+ 
+   if(rc < 0) {
+     err = PR_GetError();
+-
+-    if(err == PR_IO_TIMEOUT_ERROR) {
+-      failf(data, "SSL connection send timeout");
+-      return -1;
+-    }
++    if(err == PR_WOULD_BLOCK_ERROR)
++      return 0; /* EWOULDBLOCK equivalent */
+ 
+     if(!handle_cert_error(err, conn, sockindex))
+       failf(conn->data, "SSL write: error %d", err);
+@@ -1484,15 +1481,8 @@ ssize_t Curl_nss_recv(struct connectdata * conn, /* connection data */
+                       bool * wouldblock)
+ {
+   ssize_t nread;
+-  struct SessionHandle *data = conn->data;
+-  PRInt32 timeout;
+-
+-  if(data->set.timeout)
+-    timeout = PR_MillisecondsToInterval((PRUint32)data->set.timeout);
+-  else
+-    timeout = PR_MillisecondsToInterval(DEFAULT_CONNECT_TIMEOUT);
+ 
+-  nread = PR_Recv(conn->ssl[num].handle, buf, (int)buffersize, 0, timeout);
++  nread = PR_Recv(conn->ssl[num].handle, buf, (int)buffersize, 0, -1);
+   *wouldblock = FALSE;
+   if(nread < 0) {
+     /* failed SSL read */
+@@ -1500,14 +1490,10 @@ ssize_t Curl_nss_recv(struct connectdata * conn, /* connection data */
+ 
+     if(err == PR_WOULD_BLOCK_ERROR) {
+       *wouldblock = TRUE;
+-      return -1; /* basically EWOULDBLOCK */
+-    }
+-    if(err == PR_IO_TIMEOUT_ERROR) {
+-      failf(data, "SSL connection receive timeout");
+-      return -1;
++      return -1; /* EWOULDBLOCK */
+     }
+-    if(!handle_cert_error(err, conn, num))
+-      failf(conn->data, "SSL read: errno %d", err);
++
++    failf(conn->data, "SSL read: errno %d", err);
+     return -1;
+   }
+   return nread;
+-- 
+1.7.1
+
+
+From ffcc033df27464a48e1c33c8e31230e26ec9e346 Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Tue, 5 Mar 2013 17:51:01 +0100
+Subject: [PATCH 2/6] nss: fix misplaced code enabling non-blocking socket mode
+
+The option needs to be set on the SSL socket.  Setting it on the model
+takes no effect.  Note that the non-blocking mode is still not enabled
+for the handshake because the code is not yet ready for that.
+
+[upstream commit 9d0af3018c5db25f5adda216dbcad6056b4a3107]
+
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/nss.c |   12 ++++++------
+ 1 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/lib/nss.c b/lib/nss.c
+index 8da5760..7adb5ff 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -1203,12 +1203,6 @@ CURLcode Curl_nss_connect(struct connectdata *conn, int sockindex)
+     goto error;
+   model = SSL_ImportFD(NULL, model);
+ 
+-  /* make the socket nonblocking */
+-  sock_opt.option = PR_SockOpt_Nonblocking;
+-  sock_opt.value.non_blocking = PR_TRUE;
+-  if(PR_SetSocketOption(model, &sock_opt) != SECSuccess)
+-    goto error;
+-
+   if(SSL_OptionSet(model, SSL_SECURITY, PR_TRUE) != SECSuccess)
+     goto error;
+   if(SSL_OptionSet(model, SSL_HANDSHAKE_AS_SERVER, PR_FALSE) != SECSuccess)
+@@ -1373,6 +1367,12 @@ CURLcode Curl_nss_connect(struct connectdata *conn, int sockindex)
+     goto error;
+   }
+ 
++  /* switch the SSL socket into non-blocking mode */
++  sock_opt.option = PR_SockOpt_Nonblocking;
++  sock_opt.value.non_blocking = PR_TRUE;
++  if(PR_SetSocketOption(connssl->handle, &sock_opt) != PR_SUCCESS)
++    goto error;
++
+   connssl->state = ssl_connection_complete;
+ 
+   display_conn_info(conn, connssl->handle);
+-- 
+1.7.1
+
+
+From 2bb2dad4c6134a16c6bc31a058735533438ad09a Mon Sep 17 00:00:00 2001
+From: Daniel Stenberg <daniel@haxx.se>
+Date: Tue, 7 May 2013 23:30:52 +0200
+Subject: [PATCH 3/6] nss: give PR_INTERVAL_NO_WAIT instead of -1 to PR_Recv/PR_Send
+
+Reported by: David Strauss
+Bug: http://curl.haxx.se/mail/lib-2013-05/0088.html
+
+[upstream commit 01a2abedd7e3a2075de70979003302313570c58c]
+
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/nss.c |   11 ++++-------
+ 1 files changed, 4 insertions(+), 7 deletions(-)
+
+diff --git a/lib/nss.c b/lib/nss.c
+index 7adb5ff..56b5b5b 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -1453,10 +1453,8 @@ int Curl_nss_send(struct connectdata *conn,  /* connection data */
+                   size_t len)                /* amount to write */
+ {
+   PRInt32 err;
+-  int rc;
+-
+-  rc = PR_Send(conn->ssl[sockindex].handle, mem, (int)len, 0, -1);
+-
++  ssize_t rc = PR_Send(conn->ssl[sockindex].handle, mem, (int)len, 0,
++                       PR_INTERVAL_NO_WAIT);
+   if(rc < 0) {
+     err = PR_GetError();
+     if(err == PR_WOULD_BLOCK_ERROR)
+@@ -1480,9 +1478,8 @@ ssize_t Curl_nss_recv(struct connectdata * conn, /* connection data */
+                       size_t buffersize,         /* max amount to read */
+                       bool * wouldblock)
+ {
+-  ssize_t nread;
+-
+-  nread = PR_Recv(conn->ssl[num].handle, buf, (int)buffersize, 0, -1);
++  ssize_t nread = PR_Recv(conn->ssl[num].handle, buf, (int)buffersize, 0,
++                          PR_INTERVAL_NO_WAIT);
+   *wouldblock = FALSE;
+   if(nread < 0) {
+     /* failed SSL read */
+-- 
+1.7.1
+
+
+From 579ecbf67c38f04baa34d42ec30f07e2168efecb Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Thu, 17 Apr 2014 13:12:59 +0200
+Subject: [PATCH 4/6] nss: split Curl_nss_connect() into 4 functions
+
+[upstream commit a43bba3a34ed8912c4ca10f213590d1998ba0d29]
+
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/nss.c |  115 +++++++++++++++++++++++++++++++++++++++++++++----------------
+ 1 files changed, 85 insertions(+), 30 deletions(-)
+
+diff --git a/lib/nss.c b/lib/nss.c
+index 56b5b5b..76a0dda 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -1136,9 +1136,52 @@ static CURLcode nss_load_ca_certificates(struct connectdata *conn,
+   return CURLE_OK;
+ }
+ 
+-CURLcode Curl_nss_connect(struct connectdata *conn, int sockindex)
++static CURLcode nss_fail_connect(struct ssl_connect_data *connssl,
++                                 struct SessionHandle *data,
++                                 CURLcode curlerr)
++{
++  const PRErrorCode err = PR_GetError();
++  PRBool ssl3, tls1;
++
++  /* reset the flag to avoid an infinite loop */
++  data->state.ssl_connect_retry = FALSE;
++
++  infof(data, "NSS error %d\n", err);
++
++#ifdef HAVE_PK11_CREATEGENERICOBJECT
++  /* cleanup on connection failure */
++  Curl_llist_destroy(connssl->obj_list, NULL);
++  connssl->obj_list = NULL;
++#endif
++
++  if((SSL_OptionGet(connssl->handle, SSL_ENABLE_SSL3, &ssl3) == SECSuccess)
++      && (SSL_OptionGet(connssl->handle, SSL_ENABLE_TLS, &tls1) == SECSuccess)
++      && ssl3 && tls1 && isTLSIntoleranceError(err)) {
++    /* schedule reconnect through Curl_retry_request() */
++    data->state.ssl_connect_retry = TRUE;
++    infof(data, "Error in TLS handshake, trying SSLv3...\n");
++    return CURLE_OK;
++  }
++
++  return curlerr;
++}
++
++/* Switch the SSL socket into non-blocking mode. */
++static CURLcode nss_set_nonblock(struct ssl_connect_data *connssl,
++                                 struct SessionHandle *data)
++{
++  static PRSocketOptionData sock_opt;
++  sock_opt.option = PR_SockOpt_Nonblocking;
++  sock_opt.value.non_blocking = PR_TRUE;
++
++  if(PR_SetSocketOption(connssl->handle, &sock_opt) != PR_SUCCESS)
++    return nss_fail_connect(connssl, data, CURLE_SSL_CONNECT_ERROR);
++
++  return CURLE_OK;
++}
++
++static CURLcode nss_setup_connect(struct connectdata *conn, int sockindex)
+ {
+-  PRInt32 err;
+   PRFileDesc *model = NULL;
+   PRBool ssl2 = PR_FALSE;
+   PRBool ssl3 = PR_FALSE;
+@@ -1149,9 +1192,6 @@ CURLcode Curl_nss_connect(struct connectdata *conn, int sockindex)
+   struct ssl_connect_data *connssl = &conn->ssl[sockindex];
+   CURLcode curlerr;
+   const int *cipher_to_enable;
+-  PRSocketOptionData sock_opt;
+-  long time_left;
+-  PRUint32 timeout;
+ 
+   if (connssl->state == ssl_connection_complete)
+     return CURLE_OK;
+@@ -1350,15 +1390,31 @@ CURLcode Curl_nss_connect(struct connectdata *conn, int sockindex)
+ 
+   SSL_SetURL(connssl->handle, conn->host.name);
+ 
++  return CURLE_OK;
++
++error:
++  if(model)
++    PR_Close(model);
++
++  return nss_fail_connect(connssl, data, curlerr);
++}
++
++static CURLcode nss_do_connect(struct connectdata *conn, int sockindex)
++{
++  struct ssl_connect_data *connssl = &conn->ssl[sockindex];
++  struct SessionHandle *data = conn->data;
++  CURLcode curlerr = CURLE_SSL_CONNECT_ERROR;
++  PRUint32 timeout;
++
+   /* check timeout situation */
+-  time_left = Curl_timeleft(conn, NULL, TRUE);
++  const long time_left = Curl_timeleft(conn, NULL, TRUE);
+   if(time_left < 0L) {
+     failf(data, "timed out before SSL handshake");
+     goto error;
+   }
+-  timeout = PR_MillisecondsToInterval((PRUint32) time_left);
+ 
+   /* Force the handshake now */
++  timeout = PR_MillisecondsToInterval((PRUint32) time_left);
+   if(SSL_ForceHandshakeWithTimeout(connssl->handle, timeout) != SECSuccess) {
+     if(conn->data->set.ssl.certverifyresult == SSL_ERROR_BAD_CERT_DOMAIN)
+       curlerr = CURLE_PEER_FAILED_VERIFICATION;
+@@ -1367,12 +1423,6 @@ CURLcode Curl_nss_connect(struct connectdata *conn, int sockindex)
+     goto error;
+   }
+ 
+-  /* switch the SSL socket into non-blocking mode */
+-  sock_opt.option = PR_SockOpt_Nonblocking;
+-  sock_opt.value.non_blocking = PR_TRUE;
+-  if(PR_SetSocketOption(connssl->handle, &sock_opt) != PR_SUCCESS)
+-    goto error;
+-
+   connssl->state = ssl_connection_complete;
+ 
+   display_conn_info(conn, connssl->handle);
+@@ -1399,28 +1449,33 @@ CURLcode Curl_nss_connect(struct connectdata *conn, int sockindex)
+   return CURLE_OK;
+ 
+ error:
+-  /* reset the flag to avoid an infinite loop */
+-  data->state.ssl_connect_retry = FALSE;
++  return nss_fail_connect(connssl, data, curlerr);
++}
+ 
+-  err = PR_GetError();
+-  infof(data, "NSS error %d\n", err);
+-  if(model)
+-    PR_Close(model);
++CURLcode Curl_nss_connect(struct connectdata *conn, int sockindex)
++{
++  struct ssl_connect_data *connssl = &conn->ssl[sockindex];
++  struct SessionHandle *data = conn->data;
++  CURLcode rv;
+ 
+-#ifdef HAVE_PK11_CREATEGENERICOBJECT
+-    /* cleanup on connection failure */
+-    Curl_llist_destroy(connssl->obj_list, NULL);
+-    connssl->obj_list = NULL;
+-#endif
++  rv = nss_setup_connect(conn, sockindex);
++  if(rv)
++    return rv;
+ 
+-  if (ssl3 && tlsv1 && isTLSIntoleranceError(err)) {
+-    /* schedule reconnect through Curl_retry_request() */
+-    data->state.ssl_connect_retry = TRUE;
+-    infof(data, "Error in TLS handshake, trying SSLv3...\n");
+-    return CURLE_OK;
++  rv = nss_do_connect(conn, sockindex);
++  switch(rv) {
++  case CURLE_OK:
++    break;
++  default:
++    return rv;
+   }
+ 
+-  return curlerr;
++  /* switch the SSL socket into non-blocking mode */
++  rv = nss_set_nonblock(connssl, data);
++  if(rv)
++    return rv;
++
++  return CURLE_OK;
+ }
+ 
+ /* handle certificate related errors during send/recv, return false otherwise */
+-- 
+1.7.1
+
+
+From 5aa139832186b460ac606d180ab2bda217bd6672 Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Thu, 17 Apr 2014 13:27:39 +0200
+Subject: [PATCH 5/6] nss: implement non-blocking SSL handshake
+
+[upstream commit 8868a226cdad66a9a07d6e3f168884817592a1df]
+
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/nss.c     |   57 ++++++++++++++++++++++++++++++++++++++++++++++++---------
+ lib/nssg.h    |    1 +
+ lib/urldata.h |    1 +
+ 3 files changed, 50 insertions(+), 9 deletions(-)
+
+diff --git a/lib/nss.c b/lib/nss.c
+index 76a0dda..fc97939 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -1416,7 +1416,10 @@ static CURLcode nss_do_connect(struct connectdata *conn, int sockindex)
+   /* Force the handshake now */
+   timeout = PR_MillisecondsToInterval((PRUint32) time_left);
+   if(SSL_ForceHandshakeWithTimeout(connssl->handle, timeout) != SECSuccess) {
+-    if(conn->data->set.ssl.certverifyresult == SSL_ERROR_BAD_CERT_DOMAIN)
++    if(PR_GetError() == PR_WOULD_BLOCK_ERROR)
++      /* TODO: propagate the blocking direction from the NSPR layer */
++      return CURLE_AGAIN;
++    else if(conn->data->set.ssl.certverifyresult == SSL_ERROR_BAD_CERT_DOMAIN)
+       curlerr = CURLE_PEER_FAILED_VERIFICATION;
+     else if(conn->data->set.ssl.certverifyresult!=0)
+       curlerr = CURLE_SSL_CACERT;
+@@ -1452,32 +1455,68 @@ error:
+   return nss_fail_connect(connssl, data, curlerr);
+ }
+ 
+-CURLcode Curl_nss_connect(struct connectdata *conn, int sockindex)
++static CURLcode nss_connect_common(struct connectdata *conn, int sockindex,
++                                   bool *done)
+ {
+   struct ssl_connect_data *connssl = &conn->ssl[sockindex];
+   struct SessionHandle *data = conn->data;
++  const bool blocking = (done == NULL);
+   CURLcode rv;
+ 
+-  rv = nss_setup_connect(conn, sockindex);
+-  if(rv)
+-    return rv;
++  if(connssl->connecting_state == ssl_connect_1) {
++    rv = nss_setup_connect(conn, sockindex);
++    if(rv)
++      /* we do not expect CURLE_AGAIN from nss_setup_connect() */
++      return rv;
++
++    if(!blocking) {
++      /* in non-blocking mode, set NSS non-blocking mode before handshake */
++      rv = nss_set_nonblock(connssl, data);
++      if(rv)
++        return rv;
++    }
++
++    connssl->connecting_state = ssl_connect_2;
++  }
+ 
+   rv = nss_do_connect(conn, sockindex);
+   switch(rv) {
+   case CURLE_OK:
+     break;
++  case CURLE_AGAIN:
++    if(!blocking)
++      /* CURLE_AGAIN in non-blocking mode is not an error */
++      return CURLE_OK;
++    /* fall through */
+   default:
+     return rv;
+   }
+ 
+-  /* switch the SSL socket into non-blocking mode */
+-  rv = nss_set_nonblock(connssl, data);
+-  if(rv)
+-    return rv;
++  if(blocking) {
++    /* in blocking mode, set NSS non-blocking mode _after_ SSL handshake */
++    rv = nss_set_nonblock(connssl, data);
++    if(rv)
++      return rv;
++  }
++  else
++    /* signal completed SSL handshake */
++    *done = TRUE;
+ 
++  connssl->connecting_state = ssl_connect_done;
+   return CURLE_OK;
+ }
+ 
++CURLcode Curl_nss_connect(struct connectdata *conn, int sockindex)
++{
++  return nss_connect_common(conn, sockindex, /* blocking */ NULL);
++}
++
++CURLcode Curl_nss_connect_nonblocking(struct connectdata *conn,
++                                      int sockindex, bool *done)
++{
++  return nss_connect_common(conn, sockindex, done);
++}
++
+ /* handle certificate related errors during send/recv, return false otherwise */
+ static bool handle_cert_error(PRInt32 err, struct connectdata *conn, int num)
+ {
+diff --git a/lib/nssg.h b/lib/nssg.h
+index 161985d..0deeb15 100644
+--- a/lib/nssg.h
++++ b/lib/nssg.h
+@@ -64,6 +64,7 @@ CURLcode Curl_nss_force_init(struct SessionHandle *data);
+ #define curlssl_init Curl_nss_init
+ #define curlssl_cleanup Curl_nss_cleanup
+ #define curlssl_connect Curl_nss_connect
++#define curlssl_connect_nonblocking Curl_nss_connect_nonblocking
+ 
+ /* NSS has its own session ID cache */
+ #define curlssl_session_free(x)
+diff --git a/lib/urldata.h b/lib/urldata.h
+index b16e562..6cb372e 100644
+--- a/lib/urldata.h
++++ b/lib/urldata.h
+@@ -223,6 +223,7 @@ struct ssl_connect_data {
+   struct curl_llist *obj_list;
+   PK11GenericObject *obj_clicert;
+ #endif
++  ssl_connect_state connecting_state;
+ #endif /* USE_NSS */
+ #ifdef USE_QSOSSL
+   SSLHandle *handle;
+-- 
+1.7.1
+
+
+From f23be92c13dd644dbd3e9f63903ae57110c5df9b Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Wed, 23 Apr 2014 15:37:26 +0200
+Subject: [PATCH 6/6] nss: propagate blocking direction from NSPR I/O
+
+... during the non-blocking SSL handshake
+
+[upstream commit 9c941e92c4bd3d2a5dbe243f7517b6a6029afc6e]
+
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/http.c |    2 +-
+ lib/nss.c  |  109 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++---
+ 2 files changed, 105 insertions(+), 6 deletions(-)
+
+diff --git a/lib/http.c b/lib/http.c
+index e5bb45f..0ba0516 100644
+--- a/lib/http.c
++++ b/lib/http.c
+@@ -1834,7 +1834,7 @@ static CURLcode https_connecting(struct connectdata *conn, bool *done)
+ }
+ #endif
+ 
+-#ifdef USE_SSLEAY
++#if defined(USE_SSLEAY) || defined(USE_NSS)
+ /* This function is OpenSSL-specific. It should be made to query the generic
+    SSL layer instead. */
+ static int https_getsock(struct connectdata *conn,
+diff --git a/lib/nss.c b/lib/nss.c
+index fc97939..36219de 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -181,6 +181,10 @@ static const char* pem_library = "libnsspem.so";
+ #endif
+ SECMODModule* mod = NULL;
+ 
++/* NSPR I/O layer we use to detect blocking direction during SSL handshake */
++static PRDescIdentity nspr_io_identity = PR_INVALID_IO_LAYER;
++static PRIOMethods nspr_io_methods;
++
+ static SECStatus set_ciphers(struct SessionHandle *data, PRFileDesc * model,
+                              char *cipher_list)
+ {
+@@ -873,6 +877,60 @@ isTLSIntoleranceError(PRInt32 err)
+   }
+ }
+ 
++/* update blocking direction in case of PR_WOULD_BLOCK_ERROR */
++static void nss_update_connecting_state(ssl_connect_state state, void *secret)
++{
++  struct ssl_connect_data *connssl = (struct ssl_connect_data *)secret;
++  if(PR_GetError() != PR_WOULD_BLOCK_ERROR)
++    /* an unrelated error is passing by */
++    return;
++
++  switch(connssl->connecting_state) {
++  case ssl_connect_2:
++  case ssl_connect_2_reading:
++  case ssl_connect_2_writing:
++    break;
++  default:
++    /* we are not called from an SSL handshake */
++    return;
++  }
++
++  /* update the state accordingly */
++  connssl->connecting_state = state;
++}
++
++/* recv() wrapper we use to detect blocking direction during SSL handshake */
++static PRInt32 nspr_io_recv(PRFileDesc *fd, void *buf, PRInt32 amount,
++                            PRIntn flags, PRIntervalTime timeout)
++{
++  const PRRecvFN recv_fn = fd->lower->methods->recv;
++  const PRInt32 rv = recv_fn(fd->lower, buf, amount, flags, timeout);
++  if(rv < 0)
++    /* check for PR_WOULD_BLOCK_ERROR and update blocking direction */
++    nss_update_connecting_state(ssl_connect_2_reading, fd->secret);
++  return rv;
++}
++
++/* send() wrapper we use to detect blocking direction during SSL handshake */
++static PRInt32 nspr_io_send(PRFileDesc *fd, const void *buf, PRInt32 amount,
++                            PRIntn flags, PRIntervalTime timeout)
++{
++  const PRSendFN send_fn = fd->lower->methods->send;
++  const PRInt32 rv = send_fn(fd->lower, buf, amount, flags, timeout);
++  if(rv < 0)
++    /* check for PR_WOULD_BLOCK_ERROR and update blocking direction */
++    nss_update_connecting_state(ssl_connect_2_writing, fd->secret);
++  return rv;
++}
++
++/* close() wrapper to avoid assertion failure due to fd->secret != NULL */
++static PRStatus nspr_io_close(PRFileDesc *fd)
++{
++  const PRCloseFN close_fn = PR_GetDefaultIOMethods()->close;
++  fd->secret = NULL;
++  return close_fn(fd);
++}
++
+ static CURLcode nss_init_core(struct SessionHandle *data, const char *cert_dir)
+ {
+   if(nss_context != NULL)
+@@ -938,6 +996,21 @@ static CURLcode nss_init(struct SessionHandle *data)
+     }
+   }
+ 
++  if(nspr_io_identity == PR_INVALID_IO_LAYER) {
++    /* allocate an identity for our own NSPR I/O layer */
++    nspr_io_identity = PR_GetUniqueIdentity("libcurl");
++    if(nspr_io_identity == PR_INVALID_IO_LAYER)
++      return CURLE_OUT_OF_MEMORY;
++
++    /* the default methods just call down to the lower I/O layer */
++    memcpy(&nspr_io_methods, PR_GetDefaultIOMethods(), sizeof nspr_io_methods);
++
++    /* override certain methods in the table by our wrappers */
++    nspr_io_methods.recv  = nspr_io_recv;
++    nspr_io_methods.send  = nspr_io_send;
++    nspr_io_methods.close = nspr_io_close;
++  }
++
+   rv = nss_init_core(data, cert_dir);
+   if(rv)
+     return rv;
+@@ -1186,6 +1259,8 @@ static CURLcode nss_setup_connect(struct connectdata *conn, int sockindex)
+   PRBool ssl2 = PR_FALSE;
+   PRBool ssl3 = PR_FALSE;
+   PRBool tlsv1 = PR_FALSE;
++  PRFileDesc *nspr_io = NULL;
++  PRFileDesc *nspr_io_stub = NULL;
+   PRBool ssl_no_cache;
+   struct SessionHandle *data = conn->data;
+   curl_socket_t sockfd = conn->sock[sockindex];
+@@ -1372,11 +1447,35 @@ static CURLcode nss_setup_connect(struct connectdata *conn, int sockindex)
+     goto error;
+   }
+ 
+-  /* Import our model socket  onto the existing file descriptor */
+-  connssl->handle = PR_ImportTCPSocket(sockfd);
+-  connssl->handle = SSL_ImportFD(model, connssl->handle);
+-  if(!connssl->handle)
++  /* wrap OS file descriptor by NSPR's file descriptor abstraction */
++  nspr_io = PR_ImportTCPSocket(sockfd);
++  if(!nspr_io)
++    goto error;
++
++  /* create our own NSPR I/O layer */
++  nspr_io_stub = PR_CreateIOLayerStub(nspr_io_identity, &nspr_io_methods);
++  if(!nspr_io_stub) {
++    PR_Close(nspr_io);
+     goto error;
++  }
++
++  /* make the per-connection data accessible from NSPR I/O callbacks */
++  nspr_io_stub->secret = (void *)connssl;
++
++  /* push our new layer to the NSPR I/O stack */
++  if(PR_PushIOLayer(nspr_io, PR_TOP_IO_LAYER, nspr_io_stub) != PR_SUCCESS) {
++    PR_Close(nspr_io);
++    PR_Close(nspr_io_stub);
++    goto error;
++  }
++
++  /* import our model socket onto the current I/O stack */
++  connssl->handle = SSL_ImportFD(model, nspr_io);
++  if(!connssl->handle) {
++    PR_Close(nspr_io);
++    goto error;
++  }
++
+   PR_Close(model); /* We don't need this any more */
+   model = NULL;
+ 
+@@ -1417,7 +1516,7 @@ static CURLcode nss_do_connect(struct connectdata *conn, int sockindex)
+   timeout = PR_MillisecondsToInterval((PRUint32) time_left);
+   if(SSL_ForceHandshakeWithTimeout(connssl->handle, timeout) != SECSuccess) {
+     if(PR_GetError() == PR_WOULD_BLOCK_ERROR)
+-      /* TODO: propagate the blocking direction from the NSPR layer */
++      /* blocking direction is updated by nss_update_connecting_state() */
+       return CURLE_AGAIN;
+     else if(conn->data->set.ssl.certverifyresult == SSL_ERROR_BAD_CERT_DOMAIN)
+       curlerr = CURLE_PEER_FAILED_VERIFICATION;
+-- 
+1.7.1
+

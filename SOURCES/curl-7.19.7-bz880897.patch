@@ -1,0 +1,68 @@
+From 5331aabda8f04bacc64df9ea71808aac488f8284 Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Mon, 3 Dec 2012 13:17:50 +0100
+Subject: [PATCH] nss: prevent NSS from crashing on client auth hook failure
+
+Although it is not explicitly stated in the documentation, NSS uses
+*pRetCert and *pRetKey even if the client authentication hook returns
+a failure.  Namely, if we destroy *pRetCert without clearing *pRetCert
+afterwards, NSS destroys the certificate once again, which causes a
+double free.
+
+Reported by: Bob Relyea
+
+[upstream commit 68d2830ee9df50961e481e81c1baaa290c33f03e]
+---
+ lib/nss.c |   17 +++++++++++------
+ 1 files changed, 11 insertions(+), 6 deletions(-)
+
+diff --git a/lib/nss.c b/lib/nss.c
+index a983ea6..d60230d 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -775,6 +775,8 @@ static SECStatus SelectClientCert(void *arg, PRFileDesc *sock,
+     static const char pem_slotname[] = "PEM Token #1";
+     SECItem cert_der = { 0, NULL, 0 };
+     void *proto_win = SSL_RevealPinArg(sock);
++    struct CERTCertificateStr *cert;
++    struct SECKEYPrivateKeyStr *key;
+ 
+     PK11SlotInfo *slot = PK11_FindSlotByName(pem_slotname);
+     if(NULL == slot) {
+@@ -789,24 +791,27 @@ static SECStatus SelectClientCert(void *arg, PRFileDesc *sock,
+       return SECFailure;
+     }
+ 
+-    *pRetCert = PK11_FindCertFromDERCertItem(slot, &cert_der, proto_win);
++    cert = PK11_FindCertFromDERCertItem(slot, &cert_der, proto_win);
+     SECITEM_FreeItem(&cert_der, PR_FALSE);
+-    if(NULL == *pRetCert) {
++    if(NULL == cert) {
+       failf(data, "NSS: client certificate from file not found");
+       PK11_FreeSlot(slot);
+       return SECFailure;
+     }
+ 
+-    *pRetKey = PK11_FindPrivateKeyFromCert(slot, *pRetCert, NULL);
++    key = PK11_FindPrivateKeyFromCert(slot, cert, NULL);
+     PK11_FreeSlot(slot);
+-    if (NULL == *pRetKey) {
++    if(NULL == key) {
+       failf(data, "NSS: private key from file not found");
+-      CERT_DestroyCertificate(*pRetCert);
++      CERT_DestroyCertificate(cert);
+       return SECFailure;
+     }
+ 
+     infof(data, "NSS: client certificate from file\n");
+-    display_cert_info(data, *pRetCert);
++    display_cert_info(data, cert);
++
++    *pRetCert = cert;
++    *pRetKey = key;
+     return SECSuccess;
+   }
+ 
+-- 
+1.7.1
+

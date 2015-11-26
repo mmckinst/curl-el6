@@ -1,0 +1,63 @@
+From a08b7c4d24417f66cf722617f5e90671d2025831 Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Tue, 27 Apr 2010 13:40:11 +0200
+Subject: [PATCH] nss: fix handling of SSL timeouts
+
+---
+ lib/nss.c |   18 ++++++++++++------
+ 1 files changed, 12 insertions(+), 6 deletions(-)
+
+diff --git a/lib/nss.c b/lib/nss.c
+index 31f5590..fbccbe0 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -85,8 +85,6 @@ PRLock * nss_crllock = NULL;
+ 
+ volatile int initialized = 0;
+ 
+-#define HANDSHAKE_TIMEOUT 30
+-
+ typedef struct {
+   const char *name;
+   int num;
+@@ -1018,6 +1016,8 @@ CURLcode Curl_nss_connect(struct connectdata *conn, int sockindex)
+   char *certDir = NULL;
+   int curlerr;
+   const int *cipher_to_enable;
++  long time_left;
++  PRUint32 timeout;
+ 
+   curlerr = CURLE_SSL_CONNECT_ERROR;
+ 
+@@ -1286,10 +1286,16 @@ CURLcode Curl_nss_connect(struct connectdata *conn, int sockindex)
+ 
+   SSL_SetURL(connssl->handle, conn->host.name);
+ 
++  /* check timeout situation */
++  time_left = Curl_timeleft(conn, NULL, TRUE);
++  if(time_left < 0L) {
++    failf(data, "timed out before SSL handshake");
++    goto error;
++  }
++  timeout = PR_MillisecondsToInterval((PRUint32) time_left);
++
+   /* Force the handshake now */
+-  if(SSL_ForceHandshakeWithTimeout(connssl->handle,
+-                                    PR_SecondsToInterval(HANDSHAKE_TIMEOUT))
+-      != SECSuccess) {
++  if(SSL_ForceHandshakeWithTimeout(connssl->handle, timeout) != SECSuccess) {
+     if(conn->data->set.ssl.certverifyresult == SSL_ERROR_BAD_CERT_DOMAIN)
+       curlerr = CURLE_PEER_FAILED_VERIFICATION;
+     else if(conn->data->set.ssl.certverifyresult!=0)
+@@ -1418,7 +1424,7 @@ ssize_t Curl_nss_recv(struct connectdata * conn, /* connection data */
+   PRInt32 timeout;
+ 
+   if(data->set.timeout)
+-    timeout = PR_SecondsToInterval((PRUint32)data->set.timeout);
++    timeout = PR_MillisecondsToInterval((PRUint32)data->set.timeout);
+   else
+     timeout = PR_MillisecondsToInterval(DEFAULT_CONNECT_TIMEOUT);
+ 
+-- 
+1.6.6.1
+

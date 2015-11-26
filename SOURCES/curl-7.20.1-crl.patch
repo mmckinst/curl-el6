@@ -1,0 +1,271 @@
+From d597c9d248034a627e22249e26ff763d8fc8006c Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Wed, 14 Apr 2010 15:51:15 +0200
+Subject: [PATCH 1/2] nss: add CRL to cache instead of read-only NSS db
+
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/nss.c |   42 ++++++++++++++++++++++++++++++------------
+ 1 files changed, 30 insertions(+), 12 deletions(-)
+
+diff --git a/lib/nss.c b/lib/nss.c
+index 6b1e3f0..5b63eb9 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -64,6 +64,7 @@
+ #include <secport.h>
+ #include <certdb.h>
+ #include <base64.h>
++#include <cert.h>
+ 
+ #include "curl_memory.h"
+ #include "rawstr.h"
+@@ -80,6 +81,7 @@
+ PRFileDesc *PR_ImportTCPSocket(PRInt32 osfd);
+ 
+ PRLock * nss_initlock = NULL;
++PRLock * nss_crllock = NULL;
+ 
+ volatile int initialized = 0;
+ 
+@@ -414,6 +416,31 @@ done:
+   return 1;
+ }
+ 
++/* add given CRL to cache if it is not already there */
++static SECStatus nss_cache_crl(SECItem *crlDER)
++{
++  CERTCertDBHandle *db = CERT_GetDefaultCertDB();
++  CERTSignedCrl *crl = SEC_FindCrlByDERCert(db, crlDER, 0);
++  if(crl) {
++    /* CRL already cached */
++    SEC_DestroyCrl(crl);
++    return SECSuccess;
++  }
++
++  /* acquire lock before call of CERT_CacheCRL() */
++  PR_Lock(nss_crllock);
++  if(SECSuccess != CERT_CacheCRL(db, crlDER)) {
++    /* unable to cache CRL */
++    PR_Unlock(nss_crllock);
++    return SECFailure;
++  }
++
++  /* we need to clear session cache, so that the CRL could take effect */
++  SSL_ClearSessionCache();
++  PR_Unlock(nss_crllock);
++  return SECSuccess;
++}
++
+ static int nss_load_crl(const char* crlfilename, PRBool ascii)
+ {
+   PRFileDesc *infile;
+@@ -422,8 +449,6 @@ static int nss_load_crl(const char* crlfilename, PRBool ascii)
+   PRInt32     nb;
+   int rv;
+   SECItem crlDER;
+-  CERTSignedCrl *crl=NULL;
+-  PK11SlotInfo *slot=NULL;
+ 
+   infile = PR_Open(crlfilename,PR_RDONLY,0);
+   if (!infile) {
+@@ -476,16 +501,7 @@ static int nss_load_crl(const char* crlfilename, PRBool ascii)
+       return 0;
+   }
+ 
+-  slot = PK11_GetInternalKeySlot();
+-  crl  = PK11_ImportCRL(slot,&crlDER,
+-                        NULL,SEC_CRL_TYPE,
+-                        NULL,CRL_IMPORT_DEFAULT_OPTIONS,
+-                        NULL,(CRL_DECODE_DEFAULT_OPTIONS|
+-                              CRL_DECODE_DONT_COPY_DER));
+-  if (slot) PK11_FreeSlot(slot);
+-  if (!crl) return 0;
+-  SEC_DestroyCrl(crl);
+-  return 1;
++  return (SECSuccess == nss_cache_crl(&crlDER));
+ }
+ 
+ static int nss_load_key(struct connectdata *conn, int sockindex, char *key_file)
+@@ -888,6 +904,7 @@ int Curl_nss_init(void)
+   if (nss_initlock == NULL) {
+     PR_Init(PR_USER_THREAD, PR_PRIORITY_NORMAL, 256);
+     nss_initlock = PR_NewLock();
++    nss_crllock = PR_NewLock();
+   }
+ 
+   /* We will actually initialize NSS later */
+@@ -917,6 +934,7 @@ void Curl_nss_cleanup(void)
+   PR_Unlock(nss_initlock);
+ 
+   PR_DestroyLock(nss_initlock);
++  PR_DestroyLock(nss_crllock);
+   nss_initlock = NULL;
+ 
+   initialized = 0;
+-- 
+1.6.6.1
+
+
+From 2490e6ab765231a0eb5237d1d6db8414f6a50cc2 Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Wed, 14 Apr 2010 22:26:34 +0200
+Subject: [PATCH 2/2] nss: make it possible to read ASCII and DER CRL
+
+
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/nss.c |  109 +++++++++++++++++++++++++++++-------------------------------
+ 1 files changed, 53 insertions(+), 56 deletions(-)
+
+diff --git a/lib/nss.c b/lib/nss.c
+index 5b63eb9..31f5590 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -424,6 +424,7 @@ static SECStatus nss_cache_crl(SECItem *crlDER)
+   if(crl) {
+     /* CRL already cached */
+     SEC_DestroyCrl(crl);
++    SECITEM_FreeItem(crlDER, PR_FALSE);
+     return SECSuccess;
+   }
+ 
+@@ -432,6 +433,7 @@ static SECStatus nss_cache_crl(SECItem *crlDER)
+   if(SECSuccess != CERT_CacheCRL(db, crlDER)) {
+     /* unable to cache CRL */
+     PR_Unlock(nss_crllock);
++    SECITEM_FreeItem(crlDER, PR_FALSE);
+     return SECFailure;
+   }
+ 
+@@ -441,67 +443,63 @@ static SECStatus nss_cache_crl(SECItem *crlDER)
+   return SECSuccess;
+ }
+ 
+-static int nss_load_crl(const char* crlfilename, PRBool ascii)
++SECStatus nss_load_crl(const char* crlfilename)
+ {
+   PRFileDesc *infile;
+-  PRStatus    prstat;
+   PRFileInfo  info;
+-  PRInt32     nb;
+-  int rv;
+-  SECItem crlDER;
++  SECItem filedata = { };
++  SECItem crlDER = { };
++  char *body;
+ 
+-  infile = PR_Open(crlfilename,PR_RDONLY,0);
+-  if (!infile) {
+-    return 0;
+-  }
+-  crlDER.data = NULL;
+-  prstat = PR_GetOpenFileInfo(infile,&info);
+-  if (prstat!=PR_SUCCESS)
+-    return 0;
+-  if (ascii) {
+-    SECItem filedata;
+-    char *asc,*body;
+-    filedata.data = NULL;
+-    if (!SECITEM_AllocItem(NULL,&filedata,info.size))
+-      return 0;
+-    nb = PR_Read(infile,filedata.data,info.size);
+-    if (nb!=info.size)
+-      return 0;
+-    asc = (char*)filedata.data;
+-    if (!asc)
+-      return 0;
++  infile = PR_Open(crlfilename, PR_RDONLY, 0);
++  if(!infile)
++    return SECFailure;
+ 
+-    body=strstr(asc,"-----BEGIN");
+-    if (body != NULL) {
+-      char *trailer=NULL;
+-      asc = body;
+-      body = PORT_Strchr(asc,'\n');
+-      if (!body)
+-        body = PORT_Strchr(asc,'\r');
+-      if (body)
+-        trailer = strstr(++body,"-----END");
+-      if (trailer!=NULL)
+-        *trailer='\0';
+-      else
+-        return 0;
+-    }
+-    else {
+-      body = asc;
+-    }
+-    rv = ATOB_ConvertAsciiToItem(&crlDER,body);
+-    PORT_Free(filedata.data);
+-    if (rv)
+-      return 0;
+-  }
+-  else {
+-    if (!SECITEM_AllocItem(NULL,&crlDER,info.size))
+-      return 0;
+-    nb = PR_Read(infile,crlDER.data,info.size);
+-    if (nb!=info.size)
+-      return 0;
++  if(PR_SUCCESS != PR_GetOpenFileInfo(infile, &info))
++    goto fail;
++
++  if(!SECITEM_AllocItem(NULL, &filedata, info.size + /* zero ended */ 1))
++    goto fail;
++
++  if(info.size != PR_Read(infile, filedata.data, info.size))
++    goto fail;
++
++  /* place a trailing zero right after the visible data */
++  body = (char*)filedata.data;
++  body[--filedata.len] = '\0';
++
++  body = strstr(body, "-----BEGIN");
++  if(body) {
++    /* assume ASCII */
++    char *trailer;
++    char *begin = PORT_Strchr(body, '\n');
++    if(!begin)
++      begin = PORT_Strchr(body, '\r');
++    if(!begin)
++      goto fail;
++
++    trailer = strstr(++begin, "-----END");
++    if(!trailer)
++      goto fail;
++
++    /* retrieve DER from ASCII */
++    *trailer = '\0';
++    if(ATOB_ConvertAsciiToItem(&crlDER, begin))
++      goto fail;
++
++    SECITEM_FreeItem(&filedata, PR_FALSE);
+   }
++  else
++    /* assume DER */
++    crlDER = filedata;
++
++  PR_Close(infile);
++  return nss_cache_crl(&crlDER);
+ 
+-  return (SECSuccess == nss_cache_crl(&crlDER));
++fail:
++  PR_Close(infile);
++  SECITEM_FreeItem(&filedata, PR_FALSE);
++  return SECFailure;
+ }
+ 
+ static int nss_load_key(struct connectdata *conn, int sockindex, char *key_file)
+@@ -1231,8 +1229,7 @@ CURLcode Curl_nss_connect(struct connectdata *conn, int sockindex)
+         data->set.ssl.CApath ? data->set.ssl.CApath : "none");
+ 
+   if (data->set.ssl.CRLfile) {
+-    int rc = nss_load_crl(data->set.ssl.CRLfile, PR_FALSE);
+-    if (!rc) {
++    if(SECSuccess != nss_load_crl(data->set.ssl.CRLfile)) {
+       curlerr = CURLE_SSL_CRL_BADFILE;
+       goto error;
+     }
+-- 
+1.6.6.1
+

@@ -1,0 +1,13 @@
+diff --git a/tests/runtests.pl b/tests/runtests.pl
+index a6597b9..c900ad8 100755
+--- a/tests/runtests.pl
++++ b/tests/runtests.pl
+@@ -209,7 +209,7 @@ my $sshdverstr;  # for socks server, ssh daemon version string
+ my $sshderror;   # for socks server, ssh daemon version error
+ 
+ my $defserverlogslocktimeout = 20; # timeout to await server logs lock removal
+-my $defpostcommanddelay = 0; # delay between command and postcheck sections
++my $defpostcommanddelay = 1; # delay between command and postcheck sections
+ 
+ my $testnumcheck; # test number, set in singletest sub.
+ 

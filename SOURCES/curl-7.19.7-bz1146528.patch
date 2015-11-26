@@ -1,0 +1,44 @@
+From 563dd853001c13f748e40c64c587c2db5f223063 Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Wed, 2 Jul 2014 16:34:48 +0200
+Subject: [PATCH] tool: call PR_Cleanup() on exit if NSPR is used
+
+This prevents valgrind from reporting possibly lost memory that NSPR
+uses for file descriptor cache and other globally allocated internal
+data structures.
+
+Upstream-commit: 24c3cdce88f39731506c287cb276e8bf4a1ce393
+---
+ src/main.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/src/main.c b/src/main.c
+index 980106a..ee40dc3 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -100,6 +100,10 @@
+ #include <locale.h> /* for setlocale() */
+ #endif
+ 
++#ifdef USE_NSS
++#include <nspr.h>
++#endif
++
+ #define ENABLE_CURLX_PRINTF
+ /* make the curlx header define all printf() functions to use the curlx_*
+    versions instead */
+@@ -5367,6 +5371,11 @@ int main(int argc, char *argv[])
+   if (config.showerror)
+     pressanykey();
+ #endif
++#ifdef USE_NSS
++  if(PR_Initialized())
++    /* prevent valgrind from reporting possibly lost memory (fd cache, ...) */
++    PR_Cleanup();
++#endif
+   free_config_fields(&config);
+ 
+ #ifdef __NOVELL_LIBC__
+-- 
+2.1.0
+

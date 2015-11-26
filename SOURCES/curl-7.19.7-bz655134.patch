@@ -1,0 +1,95 @@
+From c407b74d3ba35ff8112349e0d6b3e0587cdf538a Mon Sep 17 00:00:00 2001
+From: Pierre Carrier <pcarrier@redhat.com>
+Date: Sun, 21 Nov 2010 17:18:33 +0000
+Subject: [PATCH] Support for HTTP proxy tunneling in ldap.c
+
+kdudka: added missing include of "http.h"
+
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/ldap.c |   40 ++++++++++++++++++++++++++++++++++++++--
+ 1 files changed, 38 insertions(+), 2 deletions(-)
+
+diff --git a/lib/ldap.c b/lib/ldap.c
+index 6976549..d452328 100644
+--- a/lib/ldap.c
++++ b/lib/ldap.c
+@@ -56,7 +56,15 @@
+ #if (defined(HAVE_LDAP_SSL) && defined(HAVE_LDAP_SSL_H))
+ # include <ldap_ssl.h>
+ #endif /* HAVE_LDAP_SSL && HAVE_LDAP_SSL_H */
+-#endif
++
++/* <RHBZ#655134>
++ * ldap_pvt.h is not included in the openldap-devel RPM */
++#ifndef _LDAP_PVT_H
++extern int ldap_init_fd(ber_socket_t fd, int proto, char *uri, LDAP **ldp);
++#endif /* _LDAP_PVT_H */
++#define LDAP_PROTO_TCP 1
++/* </RHBZ#655134> */
++#endif                          /* CURL_LDAP_WIN */
+ 
+ #ifdef HAVE_UNISTD_H
+ # include <unistd.h>
+@@ -74,6 +82,9 @@
+ #include "curl_memory.h"
+ #include "curl_base64.h"
+ #include "rawstr.h"
++/* <RHBZ#655134> */
++#include "http.h"
++/* </RHBZ#655134> */
+ 
+ #define _MPRINTF_REPLACE /* use our functions only */
+ #include <curl/mprintf.h>
+@@ -210,6 +221,19 @@ static CURLcode Curl_ldap(struct connectdata *conn, bool *done)
+ #endif
+   ldap_set_option(NULL, LDAP_OPT_PROTOCOL_VERSION, &ldap_proto);
+ 
++/* <RHBZ#655134> */
++  if(conn->bits.tunnel_proxy && conn->bits.httpproxy) {
++    /* for LDAP over HTTP proxy */
++    CURLcode result;
++    result = Curl_proxyCONNECT(conn, FIRSTSOCKET,
++                               conn->host.name, conn->remote_port);
++    if(CURLE_OK != result) {
++      status = CURLE_COULDNT_CONNECT;
++      goto quit;
++    }
++  }
++/* </RHBZ#655134> */
++
+   if(ldap_ssl) {
+ #ifdef HAVE_LDAP_SSL
+ #ifdef CURL_LDAP_WIN
+@@ -300,7 +324,13 @@ static CURLcode Curl_ldap(struct connectdata *conn, bool *done)
+       status = CURLE_SSL_CERTPROBLEM;
+       goto quit;
+     }
+-    server = ldap_init(conn->host.name, (int)conn->port);
++/* <RHBZ#655134> */
++    if(conn->bits.tunnel_proxy && conn->bits.httpproxy) {
++      ldap_init_fd(conn->sock[FIRSTSOCKET], LDAP_PROTO_TCP, NULL, &server);
++    } else {
++      server = ldap_init(conn->host.name, (int)conn->port);
++    }
++/* </RHBZ#655134> */
+     if(server == NULL) {
+       failf(data, "LDAP local: Cannot connect to %s:%d",
+               conn->host.name, conn->port);
+@@ -335,7 +365,13 @@ static CURLcode Curl_ldap(struct connectdata *conn, bool *done)
+ #endif
+ #endif /* CURL_LDAP_USE_SSL */
+   } else {
++/* <RHBZ#655134> */
++  if(conn->bits.tunnel_proxy && conn->bits.httpproxy) {
++    ldap_init_fd(conn->sock[FIRSTSOCKET], LDAP_PROTO_TCP, NULL, &server);
++  } else {
+     server = ldap_init(conn->host.name, (int)conn->port);
++  }
++/* </RHBZ#655134> */
+     if(server == NULL) {
+       failf(data, "LDAP local: Cannot connect to %s:%d",
+               conn->host.name, conn->port);
+-- 
+1.7.3.4
+

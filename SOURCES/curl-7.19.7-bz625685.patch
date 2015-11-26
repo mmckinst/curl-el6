@@ -1,0 +1,89 @@
+From 056547c8197c178121810644e239b6359f19d062 Mon Sep 17 00:00:00 2001
+From: Daniel Stenberg <daniel@haxx.se>
+Date: Tue, 6 Jul 2010 22:50:21 +0200
+Subject: [PATCH 1/2] http: don't enable chunked during authentication negotiations
+
+As mentioned in bug report #2956968, the HTTP code wouldn't send the
+first empty chunk during the auth negotiation phase of the HTTP request
+sending, so the server would wait for data to come and libcurl would
+wait for data to arrive... I've made the code not enable chunked
+encoding until the auth negotiation is done and thus this scenario
+doesn't occur anymore.
+
+Reported by: Sidney San Martin
+Bug: http://curl.haxx.se/bug/view.cgi?id=2956968
+---
+ lib/http.c |    5 ++++-
+ 1 files changed, 4 insertions(+), 1 deletions(-)
+
+diff --git a/lib/http.c b/lib/http.c
+index 1356d82..1719628 100644
+--- a/lib/http.c
++++ b/lib/http.c
+@@ -2181,7 +2181,10 @@ CURLcode Curl_http(struct connectdata *conn, bool *done)
+     if((conn->protocol&PROT_HTTP) &&
+         data->set.upload &&
+         (data->set.infilesize == -1)) {
+-      if (use_http_1_1(data, conn)) {
++      if(conn->bits.authneg)
++        /* don't enable chunked during auth neg */
++        ;
++      else if(use_http_1_1(data, conn)) {
+         /* HTTP, upload, unknown file size and not HTTP 1.0 */
+         data->req.upload_chunky = TRUE;
+       } else {
+-- 
+1.7.3.4
+
+
+From aa7f991d137f8f23d0d0eecce44774dd80ec173b Mon Sep 17 00:00:00 2001
+From: Daniel Stenberg <daniel@haxx.se>
+Date: Mon, 16 Aug 2010 22:19:38 +0200
+Subject: [PATCH 2/2] negotiation: Wrong proxy authorization
+
+There's an error in http_negotiation.c where a mistake is using only
+userpwd even for proxy requests. Ludek provided a patch, but I decided
+to write the fix slightly different using his patch as inspiration.
+
+Reported by: Ludek Finstrle
+Bug: http://curl.haxx.se/bug/view.cgi?id=3046066
+---
+ lib/http_negotiate.c |   13 +++++++++----
+ 1 files changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/lib/http_negotiate.c b/lib/http_negotiate.c
+index dedaf6f..8f9b621 100644
+--- a/lib/http_negotiate.c
++++ b/lib/http_negotiate.c
+@@ -278,6 +278,7 @@ CURLcode Curl_output_negotiate(struct connectdata *conn, bool proxy)
+     &conn->data->state.negotiate;
+   char *encoded = NULL;
+   size_t len;
++  char *userp;
+ 
+ #ifdef HAVE_SPNEGO /* Handle SPNEGO */
+   if(checkprefix("Negotiate", neg_ctx->protocol)) {
+@@ -325,12 +326,16 @@ CURLcode Curl_output_negotiate(struct connectdata *conn, bool proxy)
+   if(len == 0)
+     return CURLE_OUT_OF_MEMORY;
+ 
+-  conn->allocptr.userpwd =
+-    aprintf("%sAuthorization: %s %s\r\n", proxy ? "Proxy-" : "",
+-            neg_ctx->protocol, encoded);
++  userp = aprintf("%sAuthorization: %s %s\r\n", proxy ? "Proxy-" : "",
++                  neg_ctx->protocol, encoded);
++
++  if(proxy)
++    conn->allocptr.proxyuserpwd = userp;
++  else
++    conn->allocptr.userpwd = userp;
+   free(encoded);
+   Curl_cleanup_negotiate (conn->data);
+-  return (conn->allocptr.userpwd == NULL) ? CURLE_OUT_OF_MEMORY : CURLE_OK;
++  return (userp == NULL) ? CURLE_OUT_OF_MEMORY : CURLE_OK;
+ }
+ 
+ static void cleanup(struct negotiatedata *neg_ctx)
+-- 
+1.7.3.4
+

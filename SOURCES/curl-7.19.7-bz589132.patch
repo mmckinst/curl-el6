@@ -1,0 +1,324 @@
+ CHANGES                |   25 +++++++++
+ lib/url.c              |  133 ++++++++++++++++++++++++++++-------------------
+ tests/data/Makefile.am |    2 +-
+ tests/data/test1106    |   56 ++++++++++++++++++++
+ 4 files changed, 161 insertions(+), 55 deletions(-)
+
+diff --git a/CHANGES b/CHANGES
+index ec0daac..38c9733 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -25,6 +25,31 @@ Daniel Stenberg (22 Mar 2010)
+ Kamil Dudka (19 Mar 2010)
+ - Improved Curl_read() to not ignore the error returned from Curl_ssl_recv().
+ 
++Daniel Stenberg (17 Dec 2009)
++- Follow-up fix for the proxy fix I did for Jon Nelson's bug. It turned out I
++  was a bit too quick and broke test case 1101 with that change. The order of
++  some of the setups is sensitive. I now changed it slightly again to make
++  sure we do them in this order:
++
++  1 - parse URL and figure out what protocol is used in the URL
++  2 - prepend protocol:// to URL if missing
++  3 - parse name+password off URL, which needs to know what protocol is used
++      (since only some allows for name+password in the URL)
++  4 - figure out if a proxy should be used set by an option
++  5 - if no proxy option, check proxy environment variables
++  6 - run the protocol-specific setup function, which needs to have the proxy
++      already set
++
++Daniel Stenberg (15 Dec 2009)
++- Jon Nelson found a regression that turned out to be a flaw in how libcurl
++  detects and uses proxies based on the environment variables. If the proxy
++  was given as an explicit option it worked, but due to the setup order
++  mistake proxies would not be used fine for a few protocols when picked up
++  from '[protocol]_proxy'. Obviously this broke after 7.19.4. I now also added
++  test case 1106 that verifies this functionality.
++
++  (http://curl.haxx.se/bug/view.cgi?id=2913886)
++
+ Kamil Dudka (12 Nov 2009)
+ - Kevin Baughman provided a fix preventing libcurl-NSS from crash on doubly
+   closed NSPR descriptor. The issue was hard to find, reported several times
+diff --git a/lib/url.c b/lib/url.c
+index c13d7ff..d4d4adf 100644
+--- a/lib/url.c
++++ b/lib/url.c
+@@ -3198,6 +3198,7 @@ static struct connectdata *allocate_conn(void)
+   conn->sock[FIRSTSOCKET] = CURL_SOCKET_BAD;     /* no file descriptor */
+   conn->sock[SECONDARYSOCKET] = CURL_SOCKET_BAD; /* no file descriptor */
+   conn->connectindex = -1;    /* no index */
++  conn->port = -1; /* unknown at this point */
+ 
+   /* Default protocol-independent behavior doesn't support persistent
+      connections, so we set this to force-close. Protocols that support
+@@ -3210,6 +3211,48 @@ static struct connectdata *allocate_conn(void)
+   return conn;
+ }
+ 
++static CURLcode findprotocol(struct SessionHandle *data,
++                             struct connectdata *conn)
++{
++  const struct Curl_handler * const *pp;
++  const struct Curl_handler *p;
++
++  /* Scan protocol handler table and match against 'protostr' to set a few
++     variables based on the URL. Now that the handler may be changed later
++     when the protocol specific setup function is called. */
++  for (pp = protocols; (p = *pp) != NULL; pp++) {
++    if(Curl_raw_equal(p->scheme, conn->protostr)) {
++      /* Protocol found in table. Check if allowed */
++      if(!(data->set.allowed_protocols & p->protocol))
++        /* nope, get out */
++        break;
++
++      /* it is allowed for "normal" request, now do an extra check if this is
++         the result of a redirect */
++      if(data->state.this_is_a_follow &&
++         !(data->set.redir_protocols & p->protocol))
++        /* nope, get out */
++        break;
++
++      /* Perform setup complement if some. */
++      conn->handler = p;
++      conn->protocol |= p->protocol;
++
++      /* 'port' and 'remote_port' are set in setup_connection_internals() */
++      return CURLE_OK;
++    }
++  }
++
++
++  /* The protocol was not found in the table, but we don't have to assign it
++     to anything since it is already assigned to a dummy-struct in the
++     create_conn() function when the connectdata struct is allocated. */
++  failf(data, "Protocol %s not supported or disabled in " LIBCURL_NAME,
++        conn->protostr);
++
++  return CURLE_UNSUPPORTED_PROTOCOL;
++}
++
+ /*
+  * Parse URL and fill in the relevant members of the connection struct.
+  */
+@@ -3408,8 +3451,8 @@ static CURLcode ParseURLAndFillConnection(struct SessionHandle *data,
+    *   conn->host.name is B
+    *   data->state.path is /C
+    */
+-  (void)rc;
+-  return CURLE_OK;
++
++  return findprotocol(data, conn);
+ }
+ 
+ static void llist_dtor(void *user, void *element)
+@@ -3452,12 +3495,11 @@ static CURLcode setup_range(struct SessionHandle *data)
+ 
+ 
+ /***************************************************************
+-* Setup connection internals specific to the requested protocol
++* Setup connection internals specific to the requested protocol.
++* This MUST get called after proxy magic has been figured out.
+ ***************************************************************/
+-static CURLcode setup_connection_internals(struct SessionHandle *data,
+-                                           struct connectdata *conn)
++static CURLcode setup_connection_internals(struct connectdata *conn)
+ {
+-  const struct Curl_handler * const * pp;
+   const struct Curl_handler * p;
+   CURLcode result;
+ 
+@@ -3465,44 +3507,26 @@ static CURLcode setup_connection_internals(struct SessionHandle *data,
+ 
+   /* Scan protocol handler table. */
+ 
+-  for (pp = protocols; (p = *pp) != NULL; pp++)
+-    if(Curl_raw_equal(p->scheme, conn->protostr)) {
+-      /* Protocol found in table. Check if allowed */
+-      if(!(data->set.allowed_protocols & p->protocol))
+-        /* nope, get out */
+-        break;
++  /* Perform setup complement if some. */
++  p = conn->handler;
+ 
+-      /* it is allowed for "normal" request, now do an extra check if this is
+-         the result of a redirect */
+-      if(data->state.this_is_a_follow &&
+-         !(data->set.redir_protocols & p->protocol))
+-        /* nope, get out */
+-        break;
++  if(p->setup_connection) {
++    result = (*p->setup_connection)(conn);
+ 
+-      /* Perform setup complement if some. */
+-      conn->handler = p;
+-
+-      if(p->setup_connection) {
+-        result = (*p->setup_connection)(conn);
+-
+-        if(result != CURLE_OK)
+-          return result;
++    if(result != CURLE_OK)
++      return result;
+ 
+-        p = conn->handler;              /* May have changed. */
+-      }
++    p = conn->handler;              /* May have changed. */
++  }
+ 
+-      conn->port = p->defport;
+-      conn->remote_port = (unsigned short)p->defport;
+-      conn->protocol |= p->protocol;
+-      return CURLE_OK;
+-    }
++  if(conn->port < 0)
++    /* we check for -1 here since if proxy was detected already, this
++       was very likely already set to the proxy port */
++    conn->port = p->defport;
++  conn->remote_port = (unsigned short)p->defport;
++  conn->protocol |= p->protocol;
+ 
+-  /* The protocol was not found in the table, but we don't have to assign it
+-     to anything since it is already assigned to a dummy-struct in the
+-     create_conn() function when the connectdata struct is allocated. */
+-  failf(data, "Protocol %s not supported or disabled in " LIBCURL_NAME,
+-        conn->protostr);
+-  return CURLE_UNSUPPORTED_PROTOCOL;
++  return CURLE_OK;
+ }
+ 
+ #ifndef CURL_DISABLE_PROXY
+@@ -4402,15 +4426,6 @@ static CURLcode create_conn(struct SessionHandle *data,
+   }
+ 
+   /*************************************************************
+-   * Setup internals depending on protocol
+-   *************************************************************/
+-  result = setup_connection_internals(data, conn);
+-  if(result != CURLE_OK) {
+-    Curl_safefree(proxy);
+-    return result;
+-  }
+-
+-  /*************************************************************
+    * Parse a user name and password in the URL and strip it out
+    * of the host name
+    *************************************************************/
+@@ -4491,6 +4506,16 @@ static CURLcode create_conn(struct SessionHandle *data,
+   }
+ #endif /* CURL_DISABLE_PROXY */
+ 
++  /*************************************************************
++   * Setup internals depending on protocol. Needs to be done after
++   * we figured out what/if proxy to use.
++   *************************************************************/
++  result = setup_connection_internals(conn);
++  if(result != CURLE_OK) {
++    Curl_safefree(proxy);
++    return result;
++  }
++
+   /***********************************************************************
+    * file: is a special case in that it doesn't need a network connection
+    ***********************************************************************/
+@@ -4552,12 +4577,6 @@ static CURLcode create_conn(struct SessionHandle *data,
+   if(result != CURLE_OK)
+     return result;
+ 
+-  /*************************************************************
+-   * Check the current list of connections to see if we can
+-   * re-use an already existing one or if we have to create a
+-   * new one.
+-   *************************************************************/
+-
+   /* Get a cloned copy of the SSL config situation stored in the
+      connection struct. But to get this going nicely, we must first make
+      sure that the strings in the master copy are pointing to the correct
+@@ -4578,6 +4597,12 @@ static CURLcode create_conn(struct SessionHandle *data,
+   if(!Curl_clone_ssl_config(&data->set.ssl, &conn->ssl_config))
+     return CURLE_OUT_OF_MEMORY;
+ 
++  /*************************************************************
++   * Check the current list of connections to see if we can
++   * re-use an already existing one or if we have to create a
++   * new one.
++   *************************************************************/
++
+   /* reuse_fresh is TRUE if we are told to use a new connection by force, but
+      we only acknowledge this option if this is not a re-used connection
+      already (which happens due to follow-location or during a HTTP
+diff --git a/tests/data/Makefile.am b/tests/data/Makefile.am
+index d6dc4f3..8fdd58f 100644
+--- a/tests/data/Makefile.am
++++ b/tests/data/Makefile.am
+@@ -63,7 +63,7 @@ EXTRA_DIST = test1 test108 test117 test127 test20 test27 test34 test46	   \
+  test1089 test1090 test1091 test1092 test1093 test1094 test1095 test1096   \
+  test1097 test560 test561 test1098 test1099 test562 test563 test1100       \
+  test564 test1101 test1102 test1103 test1104 test299 test310 test311       \
+- test312 test1105 test565
++ test312 test1105 test565 test1106
+ 
+ filecheck:
+ 	@mkdir test-place; \
+diff --git a/tests/data/test1106 b/tests/data/test1106
+new file mode 100644
+index 0000000..2ac14d1
+--- /dev/null
++++ b/tests/data/test1106
+@@ -0,0 +1,56 @@
++<testcase>
++<info>
++<keywords>
++FTP
++CURLOPT_PORT
++HTTP proxy
++</keywords>
++</info>
++
++# Server-side
++<reply>
++<data nocheck="yes">
++HTTP/1.1 200 OK swsclose
++Date: Thu, 09 Nov 2010 14:49:00 GMT
++Server: test-server/fake
++Accept-Ranges: bytes
++Content-Length: 6
++
++hello
++</data>
++</reply>
++
++# Client-side
++<client>
++<server>
++http
++</server>
++ <name>
++FTP URL and with ftp_proxy environment variable set
++ </name>
++
++<setenv>
++ftp_proxy=http://%HOSTIP:%HTTPPORT/
++</setenv>
++# note that we need quotes around the URL below to make sure the shell doesn't
++# treat the semicolon as a separator!
++ <command>
++"ftp://%HOSTIP:23456/1106"
++</command>
++
++</client>
++
++# Verify data after the test has been "shot"
++<verify>
++<strip>
++^User-Agent:.*
++</strip>
++<protocol>
++GET ftp://%HOSTIP:23456/1106 HTTP/1.1
++Host: %HOSTIP:23456
++Accept: */*
++Proxy-Connection: Keep-Alive
++
++</protocol>
++</verify>
++</testcase>

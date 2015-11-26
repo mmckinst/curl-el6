@@ -1,0 +1,33 @@
+From 66d8e9e6c9a51a0276bb23cd389a05a7d47a854a Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Thu, 10 Jan 2013 14:27:47 +0100
+Subject: [PATCH] curl - rhbz #885058
+
+---
+ lib/nss.c |    7 ++++++-
+ 1 files changed, 6 insertions(+), 1 deletions(-)
+
+diff --git a/lib/nss.c b/lib/nss.c
+index d60230d..f44388f 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -1056,10 +1056,15 @@ void Curl_nss_close(struct connectdata *conn, int sockindex)
+       connssl->client_nickname = NULL;
+ 
+       /* force NSS to ask again for a client cert when connecting
+-       * next time to the same server */
++       * next time to the same server (certificate from NSS db) */
+       SSL_InvalidateSession(connssl->handle);
+     }
+ #ifdef HAVE_PK11_CREATEGENERICOBJECT
++    if(connssl->obj_clicert)
++      /* force NSS to ask again for a client cert when connecting
++       * next time to the same server (certificate from file) */
++      SSL_InvalidateSession(connssl->handle);
++
+     Curl_llist_destroy(connssl->obj_list, NULL);
+     connssl->obj_list = NULL;
+     connssl->obj_clicert = NULL;
+-- 
+1.7.1
+

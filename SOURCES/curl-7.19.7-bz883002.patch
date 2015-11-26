@@ -1,0 +1,34 @@
+From dd34c012d3ba5aa0c42c75bca8c2cdab6fa4c046 Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Mon, 30 Jul 2012 14:20:07 +0200
+Subject: [PATCH] file: use fdopen() for uploaded files if available
+
+It eliminates noisy events when using inotify and fixes a TOCTOU issue.
+
+Bug: https://bugzilla.redhat.com/844385
+Upstream-commit: 1f8518c5d9aaa369dae85620973f9b5c1add3277
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/file.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/lib/file.c b/lib/file.c
+index 5a8649e..8ccf240 100644
+--- a/lib/file.c
++++ b/lib/file.c
+@@ -341,8 +341,12 @@ static CURLcode file_upload(struct connectdata *conn)
+       failf(data, "Can't open %s for writing", file->path);
+       return CURLE_WRITE_ERROR;
+     }
++#ifdef HAVE_FDOPEN
++    fp = fdopen(fd, "wb");
++#else
+     close(fd);
+     fp = fopen(file->path, "wb");
++#endif
+   }
+ 
+   if(!fp) {
+-- 
+2.1.0
+

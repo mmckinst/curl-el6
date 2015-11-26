@@ -1,0 +1,50 @@
+From 9a6ed805d525518332cbbe94ea34bce9c360dd28 Mon Sep 17 00:00:00 2001
+From: Frank Meier <frank.meier@ergon.ch>
+Date: Fri, 22 Aug 2014 14:54:41 +0200
+Subject: [PATCH] NTLM: ignore CURLOPT_FORBID_REUSE during NTLM HTTP auth
+
+Problem: if CURLOPT_FORBID_REUSE is set, requests using NTLM failed
+since NTLM requires multiple requests that re-use the same connection
+for the authentication to work
+
+Solution: Ignore the forbid reuse flag in case the NTLM authentication
+handshake is in progress, according to the NTLM state flag.
+
+Fixed known bug #77.
+
+Upstream-commit: 63a0bd4270decef04e64fbe497b42f2c9e26c62b
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/url.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/lib/url.c b/lib/url.c
+index e33b5fa..1512a4d 100644
+--- a/lib/url.c
++++ b/lib/url.c
+@@ -4931,7 +4931,8 @@ CURLcode Curl_done(struct connectdata **connp,
+   ares_cancel(data->state.areschannel);
+ 
+   /* if data->set.reuse_forbid is TRUE, it means the libcurl client has
+-     forced us to close this no matter what we think.
++     forced us to close this connection. This is ignored for requests taking
++     place in a NTLM authentication handshake
+ 
+      if conn->bits.close is TRUE, it means that the connection should be
+      closed in spite of all our efforts to be nice, due to protocol
+@@ -4946,8 +4947,10 @@ CURLcode Curl_done(struct connectdata **connp,
+      connectindex == -1 here means that the connection has no spot in the
+      connection cache and thus we must disconnect it here.
+   */
+-  if(data->set.reuse_forbid || conn->bits.close || premature ||
+-     (-1 == conn->connectindex)) {
++
++  if((data->set.reuse_forbid && !(conn->ntlm.state == NTLMSTATE_TYPE2 ||
++                                  conn->proxyntlm.state == NTLMSTATE_TYPE2))
++     || conn->bits.close || premature || (-1 == conn->connectindex)) {
+     CURLcode res2 = Curl_disconnect(conn, FALSE); /* close the connection */
+ 
+     /* If we had an error already, make sure we return that one. But
+-- 
+2.1.0
+

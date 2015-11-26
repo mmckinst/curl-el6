@@ -1,0 +1,100 @@
+From 8ca361f027fd0a8d5bb96bfb2e49f4b1b1bcac9c Mon Sep 17 00:00:00 2001
+From: Yang Tse <yangsita@gmail.com>
+Date: Thu, 25 Feb 2010 06:59:04 +0000
+Subject: [PATCH] curl --trace-time: fix to print correct time
+
+Fixed bug report #2958074 indicating
+(http://curl.haxx.se/bug/view.cgi?id=2958074) that curl on Windows with
+option --trace-time did not use local time when timestamping trace lines.
+This could also happen on other systems depending on time souurce.
+
+Upstream-commit: 6a8aa246ffa65c33a7d99916e2d24d98b16ae85d
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ src/main.c          | 22 ++++++++++++----------
+ tests/server/util.c | 10 ++++++++--
+ 2 files changed, 20 insertions(+), 12 deletions(-)
+
+diff --git a/src/main.c b/src/main.c
+index b46c688..980106a 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -577,10 +577,7 @@ struct Configurable {
+   /* for bandwidth limiting features: */
+   curl_off_t sendpersecond; /* send to peer */
+   curl_off_t recvpersecond; /* receive from peer */
+-  struct timeval lastsendtime;
+-  size_t lastsendsize;
+-  struct timeval lastrecvtime;
+-  size_t lastrecvsize;
++
+   bool ftp_ssl;
+   bool ftp_ssl_reqd;
+   bool ftp_ssl_control;
+@@ -3619,15 +3616,22 @@ int my_trace(CURL *handle, curl_infotype type,
+   struct tm *now;
+   char timebuf[20];
+   time_t secs;
++  static time_t epoch_offset;
++  static int    known_offset;
+ 
+   (void)handle; /* prevent compiler warning */
+ 
+-  tv = cutil_tvnow();
+-  secs = tv.tv_sec;
+-  now = localtime(&secs);  /* not multithread safe but we don't care */
+-  if(config->tracetime)
++  if(config->tracetime) {
++    tv = cutil_tvnow();
++    if(!known_offset) {
++      epoch_offset = time(NULL) - tv.tv_sec;
++      known_offset = 1;
++    }
++    secs = epoch_offset + tv.tv_sec;
++    now = localtime(&secs);  /* not thread safe but we don't care */
+     snprintf(timebuf, sizeof(timebuf), "%02d:%02d:%02d.%06ld ",
+              now->tm_hour, now->tm_min, now->tm_sec, (long)tv.tv_usec);
++  }
+   else
+     timebuf[0]=0;
+ 
+@@ -4146,8 +4150,6 @@ operate(struct Configurable *config, int argc, argv_item_t argv[])
+   config->showerror=TRUE;
+   config->use_httpget=FALSE;
+   config->create_dirs=FALSE;
+-  config->lastrecvtime = cutil_tvnow();
+-  config->lastsendtime = cutil_tvnow();
+   config->maxredirs = DEFAULT_MAXREDIRS;
+ 
+   if(argc>1 &&
+diff --git a/tests/server/util.c b/tests/server/util.c
+index 23207fa..7865600 100644
+--- a/tests/server/util.c
++++ b/tests/server/util.c
+@@ -69,6 +69,8 @@ void logmsg(const char *msg, ...)
+   time_t sec;
+   struct tm *now;
+   char timebuf[20];
++  static time_t epoch_offset;
++  static int    known_offset;
+ 
+   if (!serverlogfile) {
+     fprintf(stderr, "Error: serverlogfile not set\n");
+@@ -76,8 +78,12 @@ void logmsg(const char *msg, ...)
+   }
+ 
+   tv = curlx_tvnow();
+-  sec = tv.tv_sec;
+-  now = localtime(&sec); /* not multithread safe but we don't care */
++  if(!known_offset) {
++    epoch_offset = time(NULL) - tv.tv_sec;
++    known_offset = 1;
++  }
++  sec = epoch_offset + tv.tv_sec;
++  now = localtime(&sec); /* not thread safe but we don't care */
+ 
+   snprintf(timebuf, sizeof(timebuf), "%02d:%02d:%02d.%06ld",
+     (int)now->tm_hour, (int)now->tm_min, (int)now->tm_sec, (long)tv.tv_usec);
+-- 
+2.1.0
+

@@ -1,0 +1,1038 @@
+From 3c12f9dbc3c7d5a20f8ea1ae20fde11e85c92c11 Mon Sep 17 00:00:00 2001
+From: Gergely Nagy <ngg@tresorit.com>
+Date: Thu, 19 Sep 2013 15:17:13 +0200
+Subject: [PATCH 01/13] SSL: protocol version can be specified more precisely
+
+CURL_SSLVERSION_TLSv1_0, CURL_SSLVERSION_TLSv1_1,
+CURL_SSLVERSION_TLSv1_2 enum values are added to force exact TLS version
+(CURL_SSLVERSION_TLSv1 means TLS 1.x).
+
+NSS:
+TLS minor version cannot be set, so we don't allow the new enum values.
+
+OpenSSL:
+Added support for the new enum values.
+Bugfix: The original CURL_SSLVERSION_TLSv1 value enabled only TLS 1.0,
+now it enables 1.0-1.2.
+
+Command-line tool:
+Added command line options for the new values.
+
+Upstream-commit: ad34a2d5c87c7f4b14e8dded34569395de0d8c5b
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ docs/libcurl/curl_easy_setopt.3  |  8 +++++++-
+ docs/libcurl/symbols-in-versions |  3 +++
+ include/curl/curl.h              |  5 ++++-
+ lib/nss.c                        |  6 ++++++
+ lib/ssluse.c                     | 44 ++++++++++++++++++++++++++++++++++------
+ src/main.c                       | 25 ++++++++++++++++++++---
+ 6 files changed, 80 insertions(+), 11 deletions(-)
+
+diff --git a/docs/libcurl/curl_easy_setopt.3 b/docs/libcurl/curl_easy_setopt.3
+index 3715494..5503e60 100644
+--- a/docs/libcurl/curl_easy_setopt.3
++++ b/docs/libcurl/curl_easy_setopt.3
+@@ -1563,11 +1563,17 @@ The default action. This will attempt to figure out the remote SSL protocol
+ version, i.e. either SSLv3 or TLSv1 (but not SSLv2, which became disabled
+ by default with 7.18.1).
+ .IP CURL_SSLVERSION_TLSv1
+-Force TLSv1
++Force TLSv1.x
+ .IP CURL_SSLVERSION_SSLv2
+ Force SSLv2
+ .IP CURL_SSLVERSION_SSLv3
+ Force SSLv3
++.IP CURL_SSLVERSION_TLSv1_0
++Force TLSv1.0
++.IP CURL_SSLVERSION_TLSv1_1
++Force TLSv1.1
++.IP CURL_SSLVERSION_TLSv1_2
++Force TLSv1.2
+ .RE
+ .IP CURLOPT_SSL_VERIFYPEER
+ Pass a long as parameter.
+diff --git a/docs/libcurl/symbols-in-versions b/docs/libcurl/symbols-in-versions
+index a397303..b2738dc 100644
+--- a/docs/libcurl/symbols-in-versions
++++ b/docs/libcurl/symbols-in-versions
+@@ -424,6 +424,9 @@ CURL_SSLVERSION_DEFAULT         7.9.2
+ CURL_SSLVERSION_SSLv2           7.9.2
+ CURL_SSLVERSION_SSLv3           7.9.2
+ CURL_SSLVERSION_TLSv1           7.9.2
++CURL_SSLVERSION_TLSv1_0         7.33.0
++CURL_SSLVERSION_TLSv1_1         7.33.0
++CURL_SSLVERSION_TLSv1_2         7.33.0
+ CURL_TIMECOND_IFMODSINCE        7.9.7
+ CURL_TIMECOND_IFUNMODSINCE      7.9.7
+ CURL_TIMECOND_LASTMOD           7.9.7
+diff --git a/include/curl/curl.h b/include/curl/curl.h
+index 2b97411..1bb56a4 100644
+--- a/include/curl/curl.h
++++ b/include/curl/curl.h
+@@ -1356,9 +1356,12 @@ enum CURL_NETRC_OPTION {
+ 
+ enum {
+   CURL_SSLVERSION_DEFAULT,
+-  CURL_SSLVERSION_TLSv1,
++  CURL_SSLVERSION_TLSv1, /* TLS 1.x */
+   CURL_SSLVERSION_SSLv2,
+   CURL_SSLVERSION_SSLv3,
++  CURL_SSLVERSION_TLSv1_0,
++  CURL_SSLVERSION_TLSv1_1,
++  CURL_SSLVERSION_TLSv1_2,
+ 
+   CURL_SSLVERSION_LAST /* never use, keep last */
+ };
+diff --git a/lib/nss.c b/lib/nss.c
+index 71a592c..4da8223 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -1345,6 +1345,12 @@ static CURLcode nss_setup_connect(struct connectdata *conn, int sockindex)
+   case CURL_SSLVERSION_SSLv3:
+     ssl3 = PR_TRUE;
+     break;
++  case CURL_SSLVERSION_TLSv1_0:
++  case CURL_SSLVERSION_TLSv1_1:
++  case CURL_SSLVERSION_TLSv1_2:
++    failf(data, "TLS minor version cannot be set\n");
++    curlerr = CURLE_SSL_CONNECT_ERROR;
++    goto error;
+   }
+ 
+   if(SSL_OptionSet(model, SSL_ENABLE_SSL2, ssl2) != SECSuccess)
+diff --git a/lib/ssluse.c b/lib/ssluse.c
+index f9321ea..13b41cd 100644
+--- a/lib/ssluse.c
++++ b/lib/ssluse.c
+@@ -1389,12 +1389,12 @@ ossl_connect_step1(struct connectdata *conn,
+   switch(data->set.ssl.version) {
+   default:
+   case CURL_SSLVERSION_DEFAULT:
+-    /* we try to figure out version */
+-    req_method = SSLv23_client_method();
+-    use_sni(TRUE);
+-    break;
+   case CURL_SSLVERSION_TLSv1:
+-    req_method = TLSv1_client_method();
++  case CURL_SSLVERSION_TLSv1_0:
++  case CURL_SSLVERSION_TLSv1_1:
++  case CURL_SSLVERSION_TLSv1_2:
++    /* it will be handled later with the context options */
++    req_method = SSLv23_client_method();
+     use_sni(TRUE);
+     break;
+   case CURL_SSLVERSION_SSLv2:
+@@ -1463,7 +1463,39 @@ ossl_connect_step1(struct connectdata *conn,
+ 
+   /* disable SSLv2 in the default case (i.e. allow SSLv3 and TLSv1) */
+   if(data->set.ssl.version == CURL_SSLVERSION_DEFAULT)
+-    SSL_CTX_set_options(connssl->ctx, SSL_OP_NO_SSLv2);
++  switch(data->set.ssl.version) {
++  case CURL_SSLVERSION_DEFAULT:
++    ctx_options |= SSL_OP_NO_SSLv2;
++#ifdef USE_TLS_SRP
++    if(data->set.ssl.authtype == CURL_TLSAUTH_SRP) {
++      infof(data, "Set version TLSv1.x for SRP authorisation\n");
++      ctx_options |= SSL_OP_NO_SSLv3;
++    }
++#endif
++    break;
++  case CURL_SSLVERSION_TLSv1:
++    ctx_options |= SSL_OP_NO_SSLv2;
++    ctx_options |= SSL_OP_NO_SSLv3;
++    break;
++  case CURL_SSLVERSION_TLSv1_0:
++    ctx_options |= SSL_OP_NO_SSLv2;
++    ctx_options |= SSL_OP_NO_SSLv3;
++    ctx_options |= SSL_OP_NO_TLSv1_1;
++    ctx_options |= SSL_OP_NO_TLSv1_2;
++    break;
++  case CURL_SSLVERSION_TLSv1_1:
++    ctx_options |= SSL_OP_NO_SSLv2;
++    ctx_options |= SSL_OP_NO_SSLv3;
++    ctx_options |= SSL_OP_NO_TLSv1;
++    ctx_options |= SSL_OP_NO_TLSv1_2;
++    break;
++  case CURL_SSLVERSION_TLSv1_2:
++    ctx_options |= SSL_OP_NO_SSLv2;
++    ctx_options |= SSL_OP_NO_SSLv3;
++    ctx_options |= SSL_OP_NO_TLSv1;
++    ctx_options |= SSL_OP_NO_TLSv1_1;
++    break;
++  }
+ 
+ #if 0
+   /*
+diff --git a/src/main.c b/src/main.c
+index 2edf9fc..b4d9076 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -1754,6 +1754,9 @@ static ParameterError getparameter(char *flag, /* f or -long-flag */
+     {"$G", "delegation", TRUE},
+     {"0", "http1.0",     FALSE},
+     {"1", "tlsv1",       FALSE},
++    {"10", "tlsv1.0",    FALSE},
++    {"11", "tlsv1.1",    FALSE},
++    {"12", "tlsv1.2",    FALSE},
+     {"2", "sslv2",       FALSE},
+     {"3", "sslv3",       FALSE},
+     {"4", "ipv4",       FALSE},
+@@ -2290,9 +2293,25 @@ static ParameterError getparameter(char *flag, /* f or -long-flag */
+       /* HTTP version 1.0 */
+       config->httpversion = CURL_HTTP_VERSION_1_0;
+       break;
+-    case '1':
+-      /* TLS version 1 */
+-      config->ssl_version = CURL_SSLVERSION_TLSv1;
++    case '1': /* --tlsv1* options */
++      switch(subletter) {
++      case '\0':
++        /* TLS version 1.x */
++        config->ssl_version = CURL_SSLVERSION_TLSv1;
++        break;
++      case '0':
++        /* TLS version 1.0 */
++        config->ssl_version = CURL_SSLVERSION_TLSv1_0;
++        break;
++      case '1':
++        /* TLS version 1.1 */
++        config->ssl_version = CURL_SSLVERSION_TLSv1_1;
++        break;
++      case '2':
++        /* TLS version 1.2 */
++        config->ssl_version = CURL_SSLVERSION_TLSv1_2;
++        break;
++      }
+       break;
+     case '2':
+       /* SSL version 2 */
+-- 
+2.1.0
+
+
+From 4ff76f0b75f0ecf5b237e3868000b7350418acf4 Mon Sep 17 00:00:00 2001
+From: Daniel Stenberg <daniel@haxx.se>
+Date: Tue, 15 Oct 2013 20:31:04 +0200
+Subject: [PATCH 02/13] curl: document the new --tlsv1.[012] options
+
+Upstream-commit: 076726f1412205622414abd908723c4b33ca12cb
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ docs/curl.1 | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/docs/curl.1 b/docs/curl.1
+index 2a14fac..d7bde71 100644
+--- a/docs/curl.1
++++ b/docs/curl.1
+@@ -1493,6 +1493,18 @@ internally preferred: HTTP 1.1.
+ .IP "-1/--tlsv1"
+ (SSL)
+ Forces curl to use TLS version 1 when negotiating with a remote TLS server.
++.IP "--tlsv1.0"
++(SSL)
++Forces curl to use TLS version 1.0 when negotiating with a remote TLS server.
++(Added in 7.34.0)
++.IP "--tlsv1.1"
++(SSL)
++Forces curl to use TLS version 1.1 when negotiating with a remote TLS server.
++(Added in 7.34.0)
++.IP "--tlsv1.2"
++(SSL)
++Forces curl to use TLS version 1.2 when negotiating with a remote TLS server.
++(Added in 7.34.0)
+ .IP "-2/--sslv2"
+ (SSL)
+ Forces curl to use SSL version 2 when negotiating with a remote SSL server.
+-- 
+2.1.0
+
+
+From 5049a6d87d78948873487c272c36ac8cd1ea73d1 Mon Sep 17 00:00:00 2001
+From: Steve Holme <steve_holme@hotmail.com>
+Date: Wed, 16 Oct 2013 20:06:23 +0100
+Subject: [PATCH 03/13] SSL: Corrected version number for new symbols from
+ commit ad34a2d5c87c7f
+
+Upstream-commit: 2c84ffe1549ea7d5029ba7863f53013562e6758d
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ docs/libcurl/symbols-in-versions | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/docs/libcurl/symbols-in-versions b/docs/libcurl/symbols-in-versions
+index b2738dc..92dd293 100644
+--- a/docs/libcurl/symbols-in-versions
++++ b/docs/libcurl/symbols-in-versions
+@@ -424,9 +424,9 @@ CURL_SSLVERSION_DEFAULT         7.9.2
+ CURL_SSLVERSION_SSLv2           7.9.2
+ CURL_SSLVERSION_SSLv3           7.9.2
+ CURL_SSLVERSION_TLSv1           7.9.2
+-CURL_SSLVERSION_TLSv1_0         7.33.0
+-CURL_SSLVERSION_TLSv1_1         7.33.0
+-CURL_SSLVERSION_TLSv1_2         7.33.0
++CURL_SSLVERSION_TLSv1_0         7.34.0
++CURL_SSLVERSION_TLSv1_1         7.34.0
++CURL_SSLVERSION_TLSv1_2         7.34.0
+ CURL_TIMECOND_IFMODSINCE        7.9.7
+ CURL_TIMECOND_IFUNMODSINCE      7.9.7
+ CURL_TIMECOND_LASTMOD           7.9.7
+-- 
+2.1.0
+
+
+From 539df04aa52a9b0f1bea00241a8e17f65d6670aa Mon Sep 17 00:00:00 2001
+From: Steve Holme <steve_holme@hotmail.com>
+Date: Wed, 16 Oct 2013 20:18:15 +0100
+Subject: [PATCH 04/13] DOCS: Added libcurl version number to
+ CURLOPT_SSLVERSION
+
+Upstream-commit: 75b9b26465d5f01b52564293c2d553649f801f70
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ docs/libcurl/curl_easy_setopt.3 | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/docs/libcurl/curl_easy_setopt.3 b/docs/libcurl/curl_easy_setopt.3
+index 5503e60..7662cd5 100644
+--- a/docs/libcurl/curl_easy_setopt.3
++++ b/docs/libcurl/curl_easy_setopt.3
+@@ -1568,11 +1568,11 @@ Force TLSv1.x
+ Force SSLv2
+ .IP CURL_SSLVERSION_SSLv3
+ Force SSLv3
+-.IP CURL_SSLVERSION_TLSv1_0
++.IP CURL_SSLVERSION_TLSv1_0 (Added in 7.34.0)
+ Force TLSv1.0
+-.IP CURL_SSLVERSION_TLSv1_1
++.IP CURL_SSLVERSION_TLSv1_1 (Added in 7.34.0)
+ Force TLSv1.1
+-.IP CURL_SSLVERSION_TLSv1_2
++.IP CURL_SSLVERSION_TLSv1_2 (Added in 7.34.0)
+ Force TLSv1.2
+ .RE
+ .IP CURLOPT_SSL_VERIFYPEER
+-- 
+2.1.0
+
+
+From 05d8ed7387fec5341ecc87a39764682863386ab6 Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Fri, 6 Apr 2012 16:05:25 +0200
+Subject: [PATCH 05/13] nss: unconditionally require PK11_CreateGenericObject()
+
+This bumps the minimal supported version of NSS to 3.12.x.
+
+Upstream-commit: 42aa796150a580a0adff714c157d3b38b7672c7f
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ configure.ac   | 10 ++--------
+ docs/INTERNALS |  2 +-
+ lib/nss.c      | 27 +--------------------------
+ lib/urldata.h  |  2 --
+ 4 files changed, 4 insertions(+), 37 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index 7ec24ba..a00cb3e 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -1617,13 +1617,6 @@ if test "$OPENSSL_ENABLED" != "1" -a "$GNUTLS_ENABLED" != "1"; then
+       fi
+     fi
+ 
+-    dnl Check for functionPK11_CreateGenericObject
+-    dnl this is needed for using the PEM PKCS#11 module
+-    AC_CHECK_LIB(nss3, PK11_CreateGenericObject,
+-     [
+-     AC_DEFINE(HAVE_PK11_CREATEGENERICOBJECT, 1, [if you have the function PK11_CreateGenericObject])
+-     AC_SUBST(HAVE_PK11_CREATEGENERICOBJECT, [1])
+-     ])
+     if test -n "$addlib"; then
+ 
+       CLEANLIBS="$LIBS"
+@@ -1634,7 +1627,8 @@ if test "$OPENSSL_ENABLED" != "1" -a "$GNUTLS_ENABLED" != "1"; then
+          CPPFLAGS="$CPPFLAGS $addcflags"
+       fi
+ 
+-      AC_CHECK_LIB(nss3, NSS_Initialize,
++      dnl The function PK11_CreateGenericObject is needed to load libnsspem.so
++      AC_CHECK_LIB(nss3, PK11_CreateGenericObject,
+        [
+        AC_DEFINE(USE_NSS, 1, [if NSS is enabled])
+        AC_SUBST(USE_NSS, [1])
+diff --git a/docs/INTERNALS b/docs/INTERNALS
+index ced5df5..014d3f9 100644
+--- a/docs/INTERNALS
++++ b/docs/INTERNALS
+@@ -43,7 +43,7 @@ Portability
+  openldap     2.0
+  MIT krb5 lib 1.2.4
+  qsossl       V5R2M0
+- NSS          3.11.x
++ NSS          3.12.x
+  Heimdal      ?
+ 
+  * = only partly functional, but that's due to bugs in the third party lib, not
+diff --git a/lib/nss.c b/lib/nss.c
+index 4da8223..81aa51c 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -176,9 +176,7 @@ static const int enable_ciphers_by_default[] = {
+   SSL_NULL_WITH_NULL_NULL
+ };
+ 
+-#ifdef HAVE_PK11_CREATEGENERICOBJECT
+ static const char* pem_library = "libnsspem.so";
+-#endif
+ SECMODModule* mod = NULL;
+ 
+ /* NSPR I/O layer we use to detect blocking direction during SSL handshake */
+@@ -315,7 +313,6 @@ static char* dup_nickname(struct SessionHandle *data, enum dupstring cert_kind)
+   return NULL;
+ }
+ 
+-#ifdef HAVE_PK11_CREATEGENERICOBJECT
+ static CURLcode nss_create_object(struct ssl_connect_data *ssl,
+                                   CK_OBJECT_CLASS obj_class,
+                                   const char *filename, bool cacert)
+@@ -371,7 +368,6 @@ static void nss_destroy_object(void *user, void *ptr)
+   (void) user;
+   PK11_DestroyGenericObject(obj);
+ }
+-#endif
+ 
+ static CURLcode nss_load_cert(struct ssl_connect_data *ssl,
+                               const char *filename, PRBool cacert)
+@@ -380,7 +376,6 @@ static CURLcode nss_load_cert(struct ssl_connect_data *ssl,
+     ? CURLE_SSL_CACERT_BADFILE
+     : CURLE_SSL_CERTPROBLEM;
+ 
+-#ifdef HAVE_PK11_CREATEGENERICOBJECT
+   /* libnsspem.so leaks memory if the requested file does not exist.  For more
+    * details, go to <https://bugzilla.redhat.com/734760>. */
+   if(is_file(filename))
+@@ -407,7 +402,6 @@ static CURLcode nss_load_cert(struct ssl_connect_data *ssl,
+       free(nickname);
+     }
+   }
+-#endif
+ 
+   return err;
+ }
+@@ -501,10 +495,10 @@ fail:
+ static CURLcode nss_load_key(struct connectdata *conn, int sockindex,
+                              char *key_file)
+ {
+-#ifdef HAVE_PK11_CREATEGENERICOBJECT
+   PK11SlotInfo *slot;
+   SECStatus status;
+   struct ssl_connect_data *ssl = conn->ssl;
++  (void)sockindex; /* unused */
+ 
+   CURLcode rv = nss_create_object(ssl, CKO_PRIVATE_KEY, key_file, FALSE);
+   if(CURLE_OK != rv) {
+@@ -526,15 +520,6 @@ static CURLcode nss_load_key(struct connectdata *conn, int sockindex,
+   return (SECSuccess == status)
+     ? CURLE_OK
+     : CURLE_SSL_CERTPROBLEM;
+-#else
+-  /* If we don't have PK11_CreateGenericObject then we can't load a file-based
+-   * key.
+-   */
+-  (void)conn; /* unused */
+-  (void)key_file; /* unused */
+-  return CURLE_SSL_CERTPROBLEM;
+-#endif
+-  (void)sockindex; /* unused */
+ }
+ 
+ static int display_error(struct connectdata *conn, PRInt32 err,
+@@ -1132,7 +1117,6 @@ void Curl_nss_close(struct connectdata *conn, int sockindex)
+        * next time to the same server (certificate from NSS db) */
+       SSL_InvalidateSession(connssl->handle);
+     }
+-#ifdef HAVE_PK11_CREATEGENERICOBJECT
+     if(connssl->obj_clicert)
+       /* force NSS to ask again for a client cert when connecting
+        * next time to the same server (certificate from file) */
+@@ -1141,7 +1125,6 @@ void Curl_nss_close(struct connectdata *conn, int sockindex)
+     Curl_llist_destroy(connssl->obj_list, NULL);
+     connssl->obj_list = NULL;
+     connssl->obj_clicert = NULL;
+-#endif
+     PR_Close(connssl->handle);
+     connssl->handle = NULL;
+   }
+@@ -1221,11 +1204,9 @@ static CURLcode nss_fail_connect(struct ssl_connect_data *connssl,
+ 
+   infof(data, "NSS error %d\n", err);
+ 
+-#ifdef HAVE_PK11_CREATEGENERICOBJECT
+   /* cleanup on connection failure */
+   Curl_llist_destroy(connssl->obj_list, NULL);
+   connssl->obj_list = NULL;
+-#endif
+ 
+   if((SSL_OptionGet(connssl->handle, SSL_ENABLE_SSL3, &ssl3) == SECSuccess)
+       && (SSL_OptionGet(connssl->handle, SSL_ENABLE_TLS, &tls1) == SECSuccess)
+@@ -1270,11 +1251,9 @@ static CURLcode nss_setup_connect(struct connectdata *conn, int sockindex)
+ 
+   connssl->data = data;
+ 
+-#ifdef HAVE_PK11_CREATEGENERICOBJECT
+   connssl->obj_list = Curl_llist_alloc(nss_destroy_object);
+   if(!connssl->obj_list)
+     return CURLE_OUT_OF_MEMORY;
+-#endif
+ 
+   /* FIXME. NSS doesn't support multiple databases open at the same time. */
+   PR_Lock(nss_initlock);
+@@ -1286,7 +1265,6 @@ static CURLcode nss_setup_connect(struct connectdata *conn, int sockindex)
+ 
+   curlerr = CURLE_SSL_CONNECT_ERROR;
+ 
+-#ifdef HAVE_PK11_CREATEGENERICOBJECT
+   if(!mod) {
+     char *configstring = aprintf("library=%s name=PEM", pem_library);
+     if(!configstring) {
+@@ -1305,7 +1283,6 @@ static CURLcode nss_setup_connect(struct connectdata *conn, int sockindex)
+             "PEM certificates will not work.\n", pem_library);
+     }
+   }
+-#endif
+ 
+   PK11_SetPasswordFunc(nss_get_password);
+   PR_Unlock(nss_initlock);
+@@ -1424,9 +1401,7 @@ static CURLcode nss_setup_connect(struct connectdata *conn, int sockindex)
+     char *nickname = dup_nickname(data, STRING_CERT);
+     if(nickname) {
+       /* we are not going to use libnsspem.so to read the client cert */
+-#ifdef HAVE_PK11_CREATEGENERICOBJECT
+       connssl->obj_clicert = NULL;
+-#endif
+     }
+     else {
+       CURLcode rv = cert_stuff(conn, sockindex, data->set.str[STRING_CERT],
+diff --git a/lib/urldata.h b/lib/urldata.h
+index 6cb372e..e0b6b2d 100644
+--- a/lib/urldata.h
++++ b/lib/urldata.h
+@@ -219,10 +219,8 @@ struct ssl_connect_data {
+   PRFileDesc *handle;
+   char *client_nickname;
+   struct SessionHandle *data;
+-#ifdef HAVE_PK11_CREATEGENERICOBJECT
+   struct curl_llist *obj_list;
+   PK11GenericObject *obj_clicert;
+-#endif
+   ssl_connect_state connecting_state;
+ #endif /* USE_NSS */
+ #ifdef USE_QSOSSL
+-- 
+2.1.0
+
+
+From e7ecabb48962c8b730ca125c58ec5b8404cfff19 Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Mon, 25 Nov 2013 16:03:52 +0100
+Subject: [PATCH 06/13] nss: use a better API for controlling SSL version
+
+This change introduces a dependency on NSS 3.14+.
+
+Upstream-commit: 30e7e7552ba4397896ecac82ea04f38d52c4cc8f
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ configure.ac   |  4 ++--
+ docs/INTERNALS |  2 +-
+ lib/nss.c      | 39 ++++++++++++++++++---------------------
+ 3 files changed, 21 insertions(+), 24 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index a00cb3e..d4e2768 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -1627,8 +1627,8 @@ if test "$OPENSSL_ENABLED" != "1" -a "$GNUTLS_ENABLED" != "1"; then
+          CPPFLAGS="$CPPFLAGS $addcflags"
+       fi
+ 
+-      dnl The function PK11_CreateGenericObject is needed to load libnsspem.so
+-      AC_CHECK_LIB(nss3, PK11_CreateGenericObject,
++      dnl The function SSL_VersionRangeSet() is needed to enable TLS > 1.0
++      AC_CHECK_LIB(nss3, SSL_VersionRangeSet,
+        [
+        AC_DEFINE(USE_NSS, 1, [if NSS is enabled])
+        AC_SUBST(USE_NSS, [1])
+diff --git a/docs/INTERNALS b/docs/INTERNALS
+index 014d3f9..f0f9443 100644
+--- a/docs/INTERNALS
++++ b/docs/INTERNALS
+@@ -43,7 +43,7 @@ Portability
+  openldap     2.0
+  MIT krb5 lib 1.2.4
+  qsossl       V5R2M0
+- NSS          3.12.x
++ NSS          3.14.x
+  Heimdal      ?
+ 
+  * = only partly functional, but that's due to bugs in the third party lib, not
+diff --git a/lib/nss.c b/lib/nss.c
+index 81aa51c..835efdd 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -1196,8 +1196,8 @@ static CURLcode nss_fail_connect(struct ssl_connect_data *connssl,
+                                  struct SessionHandle *data,
+                                  CURLcode curlerr)
+ {
++  SSLVersionRange sslver;
+   const PRErrorCode err = PR_GetError();
+-  PRBool ssl3, tls1;
+ 
+   /* reset the flag to avoid an infinite loop */
+   data->state.ssl_connect_retry = FALSE;
+@@ -1208,9 +1208,10 @@ static CURLcode nss_fail_connect(struct ssl_connect_data *connssl,
+   Curl_llist_destroy(connssl->obj_list, NULL);
+   connssl->obj_list = NULL;
+ 
+-  if((SSL_OptionGet(connssl->handle, SSL_ENABLE_SSL3, &ssl3) == SECSuccess)
+-      && (SSL_OptionGet(connssl->handle, SSL_ENABLE_TLS, &tls1) == SECSuccess)
+-      && ssl3 && tls1 && isTLSIntoleranceError(err)) {
++  if((SSL_VersionRangeGet(connssl->handle, &sslver) == SECSuccess)
++      && (sslver.min == SSL_LIBRARY_VERSION_3_0)
++      && (sslver.max == SSL_LIBRARY_VERSION_TLS_1_0)
++      && isTLSIntoleranceError(err)) {
+     /* schedule reconnect through Curl_retry_request() */
+     data->state.ssl_connect_retry = TRUE;
+     infof(data, "Error in TLS handshake, trying SSLv3...\n");
+@@ -1237,9 +1238,7 @@ static CURLcode nss_set_nonblock(struct ssl_connect_data *connssl,
+ static CURLcode nss_setup_connect(struct connectdata *conn, int sockindex)
+ {
+   PRFileDesc *model = NULL;
+-  PRBool ssl2 = PR_FALSE;
+-  PRBool ssl3 = PR_FALSE;
+-  PRBool tlsv1 = PR_FALSE;
++  SSLVersionRange sslver;
+   PRFileDesc *nspr_io = NULL;
+   PRFileDesc *nspr_io_stub = NULL;
+   PRBool ssl_no_cache;
+@@ -1307,20 +1306,25 @@ static CURLcode nss_setup_connect(struct connectdata *conn, int sockindex)
+   switch (data->set.ssl.version) {
+   default:
+   case CURL_SSLVERSION_DEFAULT:
+-    ssl3 = PR_TRUE;
+-    if (data->state.ssl_connect_retry)
++    sslver.min = SSL_LIBRARY_VERSION_3_0;
++    if(data->state.ssl_connect_retry) {
+       infof(data, "TLS disabled due to previous handshake failure\n");
++      sslver.max = SSL_LIBRARY_VERSION_3_0;
++    }
+     else
+-      tlsv1 = PR_TRUE;
++      sslver.max = SSL_LIBRARY_VERSION_TLS_1_0;
+     break;
+   case CURL_SSLVERSION_TLSv1:
+-    tlsv1 = PR_TRUE;
++    sslver.min = SSL_LIBRARY_VERSION_TLS_1_0;
++    sslver.max = SSL_LIBRARY_VERSION_TLS_1_0;
+     break;
+   case CURL_SSLVERSION_SSLv2:
+-    ssl2 = PR_TRUE;
++    sslver.min = SSL_LIBRARY_VERSION_2;
++    sslver.max = SSL_LIBRARY_VERSION_2;
+     break;
+   case CURL_SSLVERSION_SSLv3:
+-    ssl3 = PR_TRUE;
++    sslver.min = SSL_LIBRARY_VERSION_3_0;
++    sslver.max = SSL_LIBRARY_VERSION_3_0;
+     break;
+   case CURL_SSLVERSION_TLSv1_0:
+   case CURL_SSLVERSION_TLSv1_1:
+@@ -1330,14 +1334,7 @@ static CURLcode nss_setup_connect(struct connectdata *conn, int sockindex)
+     goto error;
+   }
+ 
+-  if(SSL_OptionSet(model, SSL_ENABLE_SSL2, ssl2) != SECSuccess)
+-    goto error;
+-  if(SSL_OptionSet(model, SSL_ENABLE_SSL3, ssl3) != SECSuccess)
+-    goto error;
+-  if(SSL_OptionSet(model, SSL_ENABLE_TLS, tlsv1) != SECSuccess)
+-    goto error;
+-
+-  if(SSL_OptionSet(model, SSL_V2_COMPATIBLE_HELLO, ssl2) != SECSuccess)
++  if(SSL_VersionRangeSet(model, &sslver) != SECSuccess)
+     goto error;
+ 
+   /* reset the flag to avoid an infinite loop */
+-- 
+2.1.0
+
+
+From ebd5036c52901e3d6a25c06272984890815c1a11 Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Mon, 25 Nov 2013 16:14:55 +0100
+Subject: [PATCH 07/13] nss: put SSL version selection into separate fnc
+
+Upstream-commit: 4fb8241add5b68e95fbf44d3c2bf470201a9915d
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/nss.c | 72 +++++++++++++++++++++++++++++++++++++--------------------------
+ 1 file changed, 42 insertions(+), 30 deletions(-)
+
+diff --git a/lib/nss.c b/lib/nss.c
+index 835efdd..d58f5d9 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -1192,6 +1192,46 @@ static CURLcode nss_load_ca_certificates(struct connectdata *conn,
+   return CURLE_OK;
+ }
+ 
++static CURLcode nss_init_sslver(SSLVersionRange *sslver,
++                                struct SessionHandle *data)
++{
++  switch (data->set.ssl.version) {
++  default:
++  case CURL_SSLVERSION_DEFAULT:
++    sslver->min = SSL_LIBRARY_VERSION_3_0;
++    if(data->state.ssl_connect_retry) {
++      infof(data, "TLS disabled due to previous handshake failure\n");
++      sslver->max = SSL_LIBRARY_VERSION_3_0;
++    }
++    else
++      sslver->max = SSL_LIBRARY_VERSION_TLS_1_0;
++    return CURLE_OK;
++
++  case CURL_SSLVERSION_TLSv1:
++    sslver->min = SSL_LIBRARY_VERSION_TLS_1_0;
++    sslver->max = SSL_LIBRARY_VERSION_TLS_1_0;
++    return CURLE_OK;
++
++  case CURL_SSLVERSION_SSLv2:
++    sslver->min = SSL_LIBRARY_VERSION_2;
++    sslver->max = SSL_LIBRARY_VERSION_2;
++    return CURLE_OK;
++
++  case CURL_SSLVERSION_SSLv3:
++    sslver->min = SSL_LIBRARY_VERSION_3_0;
++    sslver->max = SSL_LIBRARY_VERSION_3_0;
++    return CURLE_OK;
++
++  case CURL_SSLVERSION_TLSv1_0:
++  case CURL_SSLVERSION_TLSv1_1:
++  case CURL_SSLVERSION_TLSv1_2:
++    break;
++  }
++
++  failf(data, "TLS minor version cannot be set");
++  return CURLE_SSL_CONNECT_ERROR;
++}
++
+ static CURLcode nss_fail_connect(struct ssl_connect_data *connssl,
+                                  struct SessionHandle *data,
+                                  CURLcode curlerr)
+@@ -1303,37 +1343,9 @@ static CURLcode nss_setup_connect(struct connectdata *conn, int sockindex)
+   if(SSL_OptionSet(model, SSL_NO_CACHE, ssl_no_cache) != SECSuccess)
+     goto error;
+ 
+-  switch (data->set.ssl.version) {
+-  default:
+-  case CURL_SSLVERSION_DEFAULT:
+-    sslver.min = SSL_LIBRARY_VERSION_3_0;
+-    if(data->state.ssl_connect_retry) {
+-      infof(data, "TLS disabled due to previous handshake failure\n");
+-      sslver.max = SSL_LIBRARY_VERSION_3_0;
+-    }
+-    else
+-      sslver.max = SSL_LIBRARY_VERSION_TLS_1_0;
+-    break;
+-  case CURL_SSLVERSION_TLSv1:
+-    sslver.min = SSL_LIBRARY_VERSION_TLS_1_0;
+-    sslver.max = SSL_LIBRARY_VERSION_TLS_1_0;
+-    break;
+-  case CURL_SSLVERSION_SSLv2:
+-    sslver.min = SSL_LIBRARY_VERSION_2;
+-    sslver.max = SSL_LIBRARY_VERSION_2;
+-    break;
+-  case CURL_SSLVERSION_SSLv3:
+-    sslver.min = SSL_LIBRARY_VERSION_3_0;
+-    sslver.max = SSL_LIBRARY_VERSION_3_0;
+-    break;
+-  case CURL_SSLVERSION_TLSv1_0:
+-  case CURL_SSLVERSION_TLSv1_1:
+-  case CURL_SSLVERSION_TLSv1_2:
+-    failf(data, "TLS minor version cannot be set\n");
+-    curlerr = CURLE_SSL_CONNECT_ERROR;
++  /* enable/disable the requested SSL version(s) */
++  if(nss_init_sslver(&sslver, data) != CURLE_OK)
+     goto error;
+-  }
+-
+   if(SSL_VersionRangeSet(model, &sslver) != SECSuccess)
+     goto error;
+ 
+-- 
+2.1.0
+
+
+From eaaf6b6da35871b6173080edefbfe7d5c925b78f Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Mon, 25 Nov 2013 16:25:15 +0100
+Subject: [PATCH 08/13] nss: allow to use TLS > 1.0 if built against recent NSS
+
+Bug: http://curl.haxx.se/mail/lib-2013-11/0162.html
+Upstream-commit: 7fc9325a52a6dad1f8b859a3269472ffc125edd0
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/nss.c | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/lib/nss.c b/lib/nss.c
+index d58f5d9..b3905a2 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -1209,7 +1209,13 @@ static CURLcode nss_init_sslver(SSLVersionRange *sslver,
+ 
+   case CURL_SSLVERSION_TLSv1:
+     sslver->min = SSL_LIBRARY_VERSION_TLS_1_0;
++#ifdef SSL_LIBRARY_VERSION_TLS_1_2
++    sslver->max = SSL_LIBRARY_VERSION_TLS_1_2;
++#elif defined SSL_LIBRARY_VERSION_TLS_1_1
++    sslver->max = SSL_LIBRARY_VERSION_TLS_1_1;
++#else
+     sslver->max = SSL_LIBRARY_VERSION_TLS_1_0;
++#endif
+     return CURLE_OK;
+ 
+   case CURL_SSLVERSION_SSLv2:
+@@ -1223,8 +1229,24 @@ static CURLcode nss_init_sslver(SSLVersionRange *sslver,
+     return CURLE_OK;
+ 
+   case CURL_SSLVERSION_TLSv1_0:
++    sslver->min = SSL_LIBRARY_VERSION_TLS_1_0;
++    sslver->max = SSL_LIBRARY_VERSION_TLS_1_0;
++    return CURLE_OK;
++
+   case CURL_SSLVERSION_TLSv1_1:
++#ifdef SSL_LIBRARY_VERSION_TLS_1_1
++    sslver->min = SSL_LIBRARY_VERSION_TLS_1_1;
++    sslver->max = SSL_LIBRARY_VERSION_TLS_1_1;
++    return CURLE_OK;
++#endif
++    break;
++
+   case CURL_SSLVERSION_TLSv1_2:
++#ifdef SSL_LIBRARY_VERSION_TLS_1_2
++    sslver->min = SSL_LIBRARY_VERSION_TLS_1_2;
++    sslver->max = SSL_LIBRARY_VERSION_TLS_1_2;
++    return CURLE_OK;
++#endif
+     break;
+   }
+ 
+-- 
+2.1.0
+
+
+From 0a0b23b40d00e4c6a0b15bffdcee8e832cfd8e81 Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Mon, 2 Dec 2013 16:09:12 +0100
+Subject: [PATCH 09/13] nss: make sure that 'sslver' is always initialized
+
+Upstream-commit: e221b55f67a2e12717e911f25d1bb6c85fcebfab
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/nss.c | 9 +++++----
+ 1 file changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/lib/nss.c b/lib/nss.c
+index b3905a2..72e8dd6 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -1198,13 +1198,10 @@ static CURLcode nss_init_sslver(SSLVersionRange *sslver,
+   switch (data->set.ssl.version) {
+   default:
+   case CURL_SSLVERSION_DEFAULT:
+-    sslver->min = SSL_LIBRARY_VERSION_3_0;
+     if(data->state.ssl_connect_retry) {
+       infof(data, "TLS disabled due to previous handshake failure\n");
+       sslver->max = SSL_LIBRARY_VERSION_3_0;
+     }
+-    else
+-      sslver->max = SSL_LIBRARY_VERSION_TLS_1_0;
+     return CURLE_OK;
+ 
+   case CURL_SSLVERSION_TLSv1:
+@@ -1300,7 +1297,6 @@ static CURLcode nss_set_nonblock(struct ssl_connect_data *connssl,
+ static CURLcode nss_setup_connect(struct connectdata *conn, int sockindex)
+ {
+   PRFileDesc *model = NULL;
+-  SSLVersionRange sslver;
+   PRFileDesc *nspr_io = NULL;
+   PRFileDesc *nspr_io_stub = NULL;
+   PRBool ssl_no_cache;
+@@ -1310,6 +1306,11 @@ static CURLcode nss_setup_connect(struct connectdata *conn, int sockindex)
+   CURLcode curlerr;
+   const int *cipher_to_enable;
+ 
++  SSLVersionRange sslver = {
++    SSL_LIBRARY_VERSION_3_0,      /* min */
++    SSL_LIBRARY_VERSION_TLS_1_0   /* max */
++  };
++
+   connssl->data = data;
+ 
+   connssl->obj_list = Curl_llist_alloc(nss_destroy_object);
+-- 
+2.1.0
+
+
+From 28b69f94bb415b5ab5c0433141074498d228f3b4 Mon Sep 17 00:00:00 2001
+From: Daniel Stenberg <daniel@haxx.se>
+Date: Fri, 7 Feb 2014 20:28:53 +0100
+Subject: [PATCH 10/13] --help: add missing --tlsv1.x options
+
+Upstream-commit: 67d14ab98f8b819ee6f5e6a4a2770d311c6bf13b
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ src/main.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/main.c b/src/main.c
+index b4d9076..b46c688 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -880,7 +880,10 @@ static void help(void)
+     "    --tcp-nodelay   Use the TCP_NODELAY option",
+     " -t/--telnet-option <OPT=val> Set telnet option",
+     " -z/--time-cond <time> Transfer based on a time condition",
+-    " -1/--tlsv1         Use TLSv1 (SSL)",
++    " -1/--tlsv1         Use => TLSv1 (SSL)",
++    "    --tlsv1.0       Use TLSv1.0 (SSL)",
++    "    --tlsv1.1       Use TLSv1.1 (SSL)",
++    "    --tlsv1.2       Use TLSv1.2 (SSL)",
+     "    --trace <file>  Write a debug trace to the given file",
+     "    --trace-ascii <file> Like --trace but without the hex output",
+     "    --trace-time    Add time stamps to trace/verbose output",
+-- 
+2.1.0
+
+
+From 351921791c3304cfa72cc7c2e0d72073d98c5414 Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Mon, 17 Feb 2014 16:55:10 +0100
+Subject: [PATCH 11/13] curl.1: update the description of --tlsv1
+
+... and mention the --tlsv1.[0-2] options in the --tslv1 entry
+
+Reported-by: Hubert Kario
+Upstream-commit: 03c288202ed159a2a9e953f59e58f69a86eda79b
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ docs/curl.1 | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/docs/curl.1 b/docs/curl.1
+index d7bde71..6e91df7 100644
+--- a/docs/curl.1
++++ b/docs/curl.1
+@@ -1492,7 +1492,10 @@ If this option is used several times, the last one will be used.
+ internally preferred: HTTP 1.1.
+ .IP "-1/--tlsv1"
+ (SSL)
+-Forces curl to use TLS version 1 when negotiating with a remote TLS server.
++Forces curl to use TLS version 1.x when negotiating with a remote TLS server.
++You can use options \fI--tlsv1.0\fP, \fI--tlsv1.1\fP, and \fI--tlsv1.2\fP to
++control the TLS version more precisely (if the SSL backend in use supports such
++a level of control).
+ .IP "--tlsv1.0"
+ (SSL)
+ Forces curl to use TLS version 1.0 when negotiating with a remote TLS server.
+-- 
+2.1.0
+
+
+From 684923683eefe0bdf9a952a881ac5c834db3ca31 Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Wed, 2 Jul 2014 17:37:43 +0200
+Subject: [PATCH 12/13] nss: do not abort on connection failure
+
+... due to calling SSL_VersionRangeGet() with NULL file descriptor
+
+Reported-by: upstream tests 305 and 404
+Upstream-commit: 7c21558503cbb10595c345acc7820cb9dc8741d6
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/nss.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/lib/nss.c b/lib/nss.c
+index 72e8dd6..72f7557 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -1267,7 +1267,8 @@ static CURLcode nss_fail_connect(struct ssl_connect_data *connssl,
+   Curl_llist_destroy(connssl->obj_list, NULL);
+   connssl->obj_list = NULL;
+ 
+-  if((SSL_VersionRangeGet(connssl->handle, &sslver) == SECSuccess)
++  if(connssl->handle
++      && (SSL_VersionRangeGet(connssl->handle, &sslver) == SECSuccess)
+       && (sslver.min == SSL_LIBRARY_VERSION_3_0)
+       && (sslver.max == SSL_LIBRARY_VERSION_TLS_1_0)
+       && isTLSIntoleranceError(err)) {
+-- 
+2.1.0
+
+
+From 62ed17f08197a0e1de7d62f24d1a6146fd5d08e7 Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Wed, 2 Jul 2014 17:49:37 +0200
+Subject: [PATCH 13/13] nss: make the fallback to SSLv3 work again
+
+This feature was unintentionally disabled by commit ff92fcfb.
+
+Upstream-commit: 7581dee10aedeb96231dd24e187ff5426fc72469
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/nss.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/lib/nss.c b/lib/nss.c
+index 72f7557..5599de2 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -1198,6 +1198,7 @@ static CURLcode nss_init_sslver(SSLVersionRange *sslver,
+   switch (data->set.ssl.version) {
+   default:
+   case CURL_SSLVERSION_DEFAULT:
++    sslver->min = SSL_LIBRARY_VERSION_3_0;
+     if(data->state.ssl_connect_retry) {
+       infof(data, "TLS disabled due to previous handshake failure\n");
+       sslver->max = SSL_LIBRARY_VERSION_3_0;
+@@ -1205,7 +1206,6 @@ static CURLcode nss_init_sslver(SSLVersionRange *sslver,
+     return CURLE_OK;
+ 
+   case CURL_SSLVERSION_TLSv1:
+-    sslver->min = SSL_LIBRARY_VERSION_TLS_1_0;
+ #ifdef SSL_LIBRARY_VERSION_TLS_1_2
+     sslver->max = SSL_LIBRARY_VERSION_TLS_1_2;
+ #elif defined SSL_LIBRARY_VERSION_TLS_1_1
+@@ -1270,7 +1270,7 @@ static CURLcode nss_fail_connect(struct ssl_connect_data *connssl,
+   if(connssl->handle
+       && (SSL_VersionRangeGet(connssl->handle, &sslver) == SECSuccess)
+       && (sslver.min == SSL_LIBRARY_VERSION_3_0)
+-      && (sslver.max == SSL_LIBRARY_VERSION_TLS_1_0)
++      && (sslver.max != SSL_LIBRARY_VERSION_3_0)
+       && isTLSIntoleranceError(err)) {
+     /* schedule reconnect through Curl_retry_request() */
+     data->state.ssl_connect_retry = TRUE;
+@@ -1308,7 +1308,7 @@ static CURLcode nss_setup_connect(struct connectdata *conn, int sockindex)
+   const int *cipher_to_enable;
+ 
+   SSLVersionRange sslver = {
+-    SSL_LIBRARY_VERSION_3_0,      /* min */
++    SSL_LIBRARY_VERSION_TLS_1_0,  /* min */
+     SSL_LIBRARY_VERSION_TLS_1_0   /* max */
+   };
+ 
+-- 
+2.1.0
+

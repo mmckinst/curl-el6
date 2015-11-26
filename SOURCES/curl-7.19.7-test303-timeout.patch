@@ -1,0 +1,58 @@
+From 54847e3153190ed3f96da697e72113a92bccddcd Mon Sep 17 00:00:00 2001
+From: Yang Tse <yangsita@gmail.com>
+Date: Wed, 3 Feb 2010 01:41:07 +0000
+Subject: [PATCH] added an additional second to allow test to pass on heavily
+ loaded servers
+
+Upstream-commit: e2fc29447065593f2f7bd6ac81a8a831e0ed49f7
+
+I have extended the patch to be even more slowness-tolerant.
+
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ tests/data/test303 | 6 +++---
+ tests/runtests.pl  | 2 +-
+ 2 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/tests/data/test303 b/tests/data/test303
+index 11a8009..01dd9eb 100644
+--- a/tests/data/test303
++++ b/tests/data/test303
+@@ -17,7 +17,7 @@ Connection: close
+ _data_result_data_
+ </data>
+ <postcmd>
+-wait 20
++wait 32
+ </postcmd>
+ </reply>
+ 
+@@ -30,10 +30,10 @@ SSL
+ https
+ </server>
+  <name>
+-HTTPS with 7 secs timeout
++HTTPS with 16 secs timeout
+  </name>
+  <command>
+--k https://%HOSTIP:%HTTPSPORT/want/303 -m 7
++-k https://%HOSTIP:%HTTPSPORT/want/303 -m 16
+ </command>
+ </client>
+ 
+diff --git a/tests/runtests.pl b/tests/runtests.pl
+index c900ad8..dfdf7e5 100755
+--- a/tests/runtests.pl
++++ b/tests/runtests.pl
+@@ -208,7 +208,7 @@ my $sshdvernum;  # for socks server, ssh daemon version number
+ my $sshdverstr;  # for socks server, ssh daemon version string
+ my $sshderror;   # for socks server, ssh daemon version error
+ 
+-my $defserverlogslocktimeout = 20; # timeout to await server logs lock removal
++my $defserverlogslocktimeout = 40; # timeout to await server logs lock removal
+ my $defpostcommanddelay = 1; # delay between command and postcheck sections
+ 
+ my $testnumcheck; # test number, set in singletest sub.
+-- 
+2.1.0
+

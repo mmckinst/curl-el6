@@ -1,0 +1,34 @@
+From 6164eec6d135b95559b23297ee65a8e31eb9ed97 Mon Sep 17 00:00:00 2001
+From: Daniel Stenberg <daniel@haxx.se>
+Date: Tue, 23 Mar 2010 15:26:45 +0100
+Subject: [PATCH] chunked-encoding with Content-Length: header problem
+
+Akos Pasztory filed debian bug report #572276
+http://bugs.debian.org/cgi-bin/bugreport.cgi?bug=572276
+mentioning a problem with a resource that returns chunked-encoded
+_and_ with a Content-Length and libcurl failed to properly ignore
+the latter information.
+
+[upstream commit 7fd32ce73d7e253df1e8067d45d50ef9d5290cbd]
+
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/transfer.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/lib/transfer.c b/lib/transfer.c
+index 3303c1b..69f267c 100644
+--- a/lib/transfer.c
++++ b/lib/transfer.c
+@@ -1047,7 +1047,7 @@ static CURLcode readwrite_http_headers(struct SessionHandle *data,
+              using chunked Transfer-Encoding.
+           */
+           if(k->chunk)
+-            k->size=-1;
++            k->maxdownload = k->size = -1;
+ 
+         }
+         if(-1 != k->size) {
+-- 
+1.7.1
+

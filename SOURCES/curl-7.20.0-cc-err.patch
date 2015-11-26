@@ -1,0 +1,115 @@
+diff --git a/lib/nss.c b/lib/nss.c
+index c7c7e5f..6b1e3f0 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -1331,6 +1331,29 @@ error:
+   return curlerr;
+ }
+ 
++/* handle certificate related errors during send/recv, return false otherwise */
++static bool handle_cert_error(PRInt32 err, struct connectdata *conn, int num)
++{
++  switch(err) {
++  case SSL_ERROR_BAD_CERT_ALERT:
++    failf(conn->data, "SSL error: SSL_ERROR_BAD_CERT_ALERT");
++    break;
++  case SSL_ERROR_REVOKED_CERT_ALERT:
++    failf(conn->data, "SSL error: SSL_ERROR_REVOKED_CERT_ALERT");
++    break;
++  case SSL_ERROR_EXPIRED_CERT_ALERT:
++    failf(conn->data, "SSL error: SSL_ERROR_EXPIRED_CERT_ALERT");
++    break;
++  default:
++    /* handle it as a ususal error during send/recv */
++    conn->ssl[num].err = CURLE_OK;
++    return false;
++  }
++
++  conn->ssl[num].err = CURLE_SSL_CERTPROBLEM;
++  return true;
++}
++
+ /* return number of sent (non-SSL) bytes */
+ int Curl_nss_send(struct connectdata *conn,  /* connection data */
+                   int sockindex,             /* socketindex */
+@@ -1357,7 +1380,8 @@ int Curl_nss_send(struct connectdata *conn,  /* connection data */
+       return -1;
+     }
+ 
+-    failf(conn->data, "SSL write: error %d", err);
++    if(!handle_cert_error(err, conn, sockindex))
++      failf(conn->data, "SSL write: error %d", err);
+     return -1;
+   }
+   return rc; /* number of bytes */
+@@ -1397,7 +1421,8 @@ ssize_t Curl_nss_recv(struct connectdata * conn, /* connection data */
+       failf(data, "SSL connection receive timeout");
+       return -1;
+     }
+-    failf(conn->data, "SSL read: errno %d", err);
++    if(!handle_cert_error(err, conn, num))
++      failf(conn->data, "SSL read: errno %d", err);
+     return -1;
+   }
+   return nread;
+diff --git a/lib/sendf.c b/lib/sendf.c
+index 33110fe..1488088 100644
+--- a/lib/sendf.c
++++ b/lib/sendf.c
+@@ -276,10 +276,10 @@ CURLcode Curl_write(struct connectdata *conn,
+                     ssize_t *written)
+ {
+   ssize_t bytes_written;
+-  CURLcode retcode;
+   int num = (sockfd == conn->sock[SECONDARYSOCKET]);
++  const bool do_ssl = (conn->ssl[num].state == ssl_connection_complete);
+ 
+-  if(conn->ssl[num].state == ssl_connection_complete)
++  if(do_ssl)
+     bytes_written = Curl_ssl_send(conn, num, mem, len);
+   else if(Curl_ssh_enabled(conn, PROT_SCP))
+     bytes_written = Curl_scp_send(conn, num, mem, len);
+@@ -291,9 +291,13 @@ CURLcode Curl_write(struct connectdata *conn,
+     bytes_written = send_plain(conn, num, mem, len);
+ 
+   *written = bytes_written;
+-  retcode = (-1 != bytes_written)?CURLE_OK:CURLE_SEND_ERROR;
++  if(-1 == bytes_written)
++    /* send error */
++    return (do_ssl && conn->ssl[num].err)
++      ? (conn->ssl[num].err)
++      : CURLE_SEND_ERROR;
+ 
+-  return retcode;
++  return CURLE_OK;
+ }
+ 
+ /*
+@@ -537,9 +541,11 @@ int Curl_read(struct connectdata *conn, /* connection data */
+ 
+     if(nread == -1)
+       return -1; /* -1 from Curl_ssl_recv() means EWOULDBLOCK */
+-    else if(nread == -2)
++    else if(nread == -2) {
+       /* -2 from Curl_ssl_recv() means a true error, not EWOULDBLOCK */
+-      return CURLE_RECV_ERROR;
++      CURLcode ssl_err = conn->ssl[num].err;
++      return ssl_err?ssl_err:CURLE_RECV_ERROR;
++    }
+   }
+   else if(Curl_ssh_enabled(conn, (PROT_SCP|PROT_SFTP))) {
+     if(conn->protocol & PROT_SCP)
+diff --git a/lib/urldata.h b/lib/urldata.h
+index b181e3f..503df18 100644
+--- a/lib/urldata.h
++++ b/lib/urldata.h
+@@ -201,6 +201,9 @@ struct ssl_connect_data {
+      current state of the connection. */
+   bool use;
+   ssl_connection_state state;
++  /* If an error occurs in curlssl_recv() or Curl_ssl_send() and ERR is
++     non-zero, it contains the error code. */
++  CURLcode err;
+ #ifdef USE_SSLEAY
+   /* these ones requires specific SSL-types */
+   SSL_CTX* ctx;

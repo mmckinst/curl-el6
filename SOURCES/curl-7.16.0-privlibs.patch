@@ -1,0 +1,13 @@
+diff --git a/libcurl.pc.in b/libcurl.pc.in
+index 25beadd..d7c0805 100644
+--- a/libcurl.pc.in
++++ b/libcurl.pc.in
+@@ -35,6 +35,6 @@ Name: libcurl
+ URL: http://curl.haxx.se/
+ Description: Library to transfer files with ftp, http, etc.
+ Version: @VERSION@
+-Libs: -L${libdir} -lcurl @LDFLAGS@ @LIBS@
+-Libs.private: @LIBCURL_LIBS@ @LIBS@
++Libs: -L${libdir} -lcurl
++Libs.private: @LIBCURL_LIBS@ @LIBS@ @LDFLAGS@
+ Cflags: -I${includedir}

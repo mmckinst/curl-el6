@@ -1,0 +1,30 @@
+From 37de0b6281040d1ef6c1353c45b5c0fb38dd34e8 Mon Sep 17 00:00:00 2001
+From: Marcus Sundberg <marcus.sundberg@aptilo.com>
+Date: Sun, 13 Mar 2011 00:21:07 +0100
+Subject: [PATCH] GSS: handle reuse fix
+
+Make GSS authentication work when a curl handle is reused for multiple
+authenticated requests, by always setting negdata->state in
+output_auth_headers().
+
+Signed-off-by: Marcus Sundberg <marcus.sundberg@aptilo.com>
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/http.c |    1 +
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+
+diff --git a/lib/http.c b/lib/http.c
+index 1719628..e5bb45f 100644
+--- a/lib/http.c
++++ b/lib/http.c
+@@ -530,6 +530,7 @@ output_auth_headers(struct connectdata *conn,
+ #endif
+ 
+ #ifdef HAVE_GSSAPI
++  negdata->state = GSS_AUTHNONE;
+   if((authstatus->picked == CURLAUTH_GSSNEGOTIATE) &&
+      negdata->context && !GSS_ERROR(negdata->status)) {
+     auth="GSS-Negotiate";
+-- 
+1.7.4
+

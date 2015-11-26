@@ -1,0 +1,37 @@
+From ecb46981b233f79661a7728d383217a182f81fad Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Thu, 17 Feb 2011 17:37:24 +0100
+Subject: [PATCH] nss: avoid memory leak on SSL connection failure
+
+---
+ lib/nss.c |    7 +++++++
+ 1 files changed, 7 insertions(+), 0 deletions(-)
+
+diff --git a/lib/nss.c b/lib/nss.c
+index ad03f64..7045bca 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -1044,6 +1044,7 @@ void Curl_nss_close(struct connectdata *conn, int sockindex)
+     }
+ #ifdef HAVE_PK11_CREATEGENERICOBJECT
+     Curl_llist_destroy(connssl->obj_list, NULL);
++    connssl->obj_list = NULL;
+ #endif
+     connssl->handle = NULL;
+   }
+@@ -1358,6 +1359,12 @@ error:
+   if(model)
+     PR_Close(model);
+ 
++#ifdef HAVE_PK11_CREATEGENERICOBJECT
++    /* cleanup on connection failure */
++    Curl_llist_destroy(connssl->obj_list, NULL);
++    connssl->obj_list = NULL;
++#endif
++
+   if (ssl3 && tlsv1 && isTLSIntoleranceError(err)) {
+     /* schedule reconnect through Curl_retry_request() */
+     data->state.ssl_connect_retry = TRUE;
+-- 
+1.7.4
+

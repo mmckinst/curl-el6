@@ -1,0 +1,26 @@
+diff --git a/lib/nss.c b/lib/nss.c
+index 51e62ee..c7c7e5f 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -1353,8 +1353,8 @@ int Curl_nss_send(struct connectdata *conn,  /* connection data */
+     err = PR_GetError();
+ 
+     if(err == PR_IO_TIMEOUT_ERROR) {
+-      failf(data, "SSL connection timeout");
+-      return CURLE_OPERATION_TIMEDOUT;
++      failf(data, "SSL connection send timeout");
++      return -1;
+     }
+ 
+     failf(conn->data, "SSL write: error %d", err);
+@@ -1394,8 +1394,8 @@ ssize_t Curl_nss_recv(struct connectdata * conn, /* connection data */
+       return -1; /* basically EWOULDBLOCK */
+     }
+     if(err == PR_IO_TIMEOUT_ERROR) {
+-      failf(data, "SSL connection timeout");
+-      return CURLE_OPERATION_TIMEDOUT;
++      failf(data, "SSL connection receive timeout");
++      return -1;
+     }
+     failf(conn->data, "SSL read: errno %d", err);
+     return -1;

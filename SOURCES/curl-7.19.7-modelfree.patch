@@ -1,0 +1,29 @@
+diff --git a/CHANGES b/CHANGES
+index 7d68e53..20831e5 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -6,6 +6,12 @@
+ 
+                                   Changelog
+ 
++Kamil Dudka (12 Nov 2009)
++- Kevin Baughman provided a fix preventing libcurl-NSS from crash on doubly
++  closed NSPR descriptor. The issue was hard to find, reported several times
++  before and always closed unresolved. More info at the RH bug:
++  https://bugzilla.redhat.com/534176
++
+ Version 7.19.7 (4 November 2009)
+ 
+ Daniel Stenberg (2 Nov 2009)
+diff --git a/lib/nss.c b/lib/nss.c
+index ea904af..addc165 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -1222,6 +1222,7 @@ CURLcode Curl_nss_connect(struct connectdata *conn, int sockindex)
+   if(!connssl->handle)
+     goto error;
+   PR_Close(model); /* We don't need this any more */
++  model = NULL;
+ 
+   /* This is the password associated with the cert that we're using */
+   if (data->set.str[STRING_KEY_PASSWD]) {

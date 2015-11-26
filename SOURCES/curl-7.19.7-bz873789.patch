@@ -1,0 +1,33 @@
+From e5a64538935b8a97a67218b91ab2f92122f637df Mon Sep 17 00:00:00 2001
+From: Daniel Stenberg <daniel@haxx.se>
+Date: Sat, 19 Jun 2010 00:18:14 +0200
+Subject: [PATCH] sendrecv: treat all negative values from send/recv as errors
+
+For example the libssh2 based functions return other negative
+values than -1 to signal errors and it is important that we catch
+them properly. Right before this, various failures from libssh2
+were treated as negative download amounts which caused havoc.
+
+[upstream commit 1b15b31c8631a4a271f15c4261331dcebec9ba47]
+
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/sendf.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/lib/sendf.c b/lib/sendf.c
+index 1488088..60ad99b 100644
+--- a/lib/sendf.c
++++ b/lib/sendf.c
+@@ -291,7 +291,7 @@ CURLcode Curl_write(struct connectdata *conn,
+     bytes_written = send_plain(conn, num, mem, len);
+ 
+   *written = bytes_written;
+-  if(-1 == bytes_written)
++  if(bytes_written < 0)
+     /* send error */
+     return (do_ssl && conn->ssl[num].err)
+       ? (conn->ssl[num].err)
+-- 
+1.7.1
+

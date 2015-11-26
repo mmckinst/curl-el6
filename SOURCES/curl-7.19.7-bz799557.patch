@@ -1,0 +1,85 @@
+From 4251a4cd735823980d5584e7f49af48a48a9cc10 Mon Sep 17 00:00:00 2001
+From: Rene Bernhardt <rene.bernhardt@pcvisit.de>
+Date: Thu, 3 Nov 2011 23:25:17 +0100
+Subject: [PATCH] HTTP auth: fix proxy Negotiate bug
+
+[upstream commit 4851dafcf164bf2de5bd33c3cf2b786422ed05b6]
+
+If a proxy offers several Authentication schemes where NTLM and
+Negotiate are offered by the proxy and you tell libcurl not to use the
+Negotiate scheme then the request never returns when the proxy answers
+with its HTTP 407 reply.
+
+It is reproducible by the following steps:
+
+- Use a proxy that offers NTLM and Negotiate ( CURLOPT_PROXY and
+CURLOPT_PROXYPORT )
+
+- Tell libcurl NOT to use Negotiate CURL_EASY_SETOPT(CURLOPT_PROXYAUTH,
+CURLAUTH_BASIC | CURLAUTH_DIGEST | CURLAUTH_NTLM )
+
+- Start the request
+
+The call to CURL_EASY_PERFORM never returns. If you switch on debug
+logging you can see that libcurl issues a new request As soon as it
+received the 407 reply. Instead it should return and set the response
+code to 407.
+
+Bug: http://curl.haxx.se/mail/lib-2011-10/0323.html
+
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/http.c |   35 ++++++++++++++++++-----------------
+ 1 files changed, 18 insertions(+), 17 deletions(-)
+
+diff --git a/lib/http.c b/lib/http.c
+index e5bb45f..cde34ce 100644
+--- a/lib/http.c
++++ b/lib/http.c
+@@ -734,25 +734,26 @@ CURLcode Curl_http_input_auth(struct connectdata *conn,
+     *availp |= CURLAUTH_GSSNEGOTIATE;
+     authp->avail |= CURLAUTH_GSSNEGOTIATE;
+ 
+-    if(data->state.negotiate.state == GSS_AUTHSENT) {
+-      /* if we sent GSS authentication in the outgoing request and we get this
+-         back, we're in trouble */
+-      infof(data, "Authentication problem. Ignoring this.\n");
+-      data->state.authproblem = TRUE;
+-    }
+-    else {
+-      neg = Curl_input_negotiate(conn, (bool)(httpcode == 407), start);
+-      if(neg == 0) {
+-        DEBUGASSERT(!data->req.newurl);
+-        data->req.newurl = strdup(data->change.url);
+-        if(!data->req.newurl)
+-          return CURLE_OUT_OF_MEMORY;
+-        data->state.authproblem = FALSE;
+-        /* we received GSS auth info and we dealt with it fine */
+-        data->state.negotiate.state = GSS_AUTHRECV;
++    if(authp->picked == CURLAUTH_GSSNEGOTIATE) {
++      if(data->state.negotiate.state == GSS_AUTHSENT) {
++        /* if we sent GSS authentication in the outgoing request and we get this
++           back, we're in trouble */
++        infof(data, "Authentication problem. Ignoring this.\n");
++        data->state.authproblem = TRUE;
+       }
+       else {
+-        data->state.authproblem = TRUE;
++        neg = Curl_input_negotiate(conn, (bool)(httpcode == 407), start);
++        if(neg == 0) {
++          DEBUGASSERT(!data->req.newurl);
++          data->req.newurl = strdup(data->change.url);
++          if(!data->req.newurl)
++            return CURLE_OUT_OF_MEMORY;
++          data->state.authproblem = FALSE;
++          /* we received GSS auth info and we dealt with it fine */
++          data->state.negotiate.state = GSS_AUTHRECV;
++        }
++        else
++          data->state.authproblem = TRUE;
+       }
+     }
+   }
+-- 
+1.7.1
+

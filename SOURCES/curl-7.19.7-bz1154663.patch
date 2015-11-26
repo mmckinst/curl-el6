@@ -1,0 +1,63 @@
+From 8e090af3622c7a526ff637176cc8b5a5fad92b6f Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Mon, 20 Oct 2014 18:18:57 +0200
+Subject: [PATCH] nss: reset SSL handshake state machine
+
+... when the handshake succeeds
+
+This fixes a connection failure when FTPS handle is reused.
+
+Upstream-commit: 0aecdf682895b42c25b232e91529f48bdf7738b3
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/nss.c | 13 +++++++------
+ 1 file changed, 7 insertions(+), 6 deletions(-)
+
+diff --git a/lib/nss.c b/lib/nss.c
+index 36219de..71a592c 100644
+--- a/lib/nss.c
++++ b/lib/nss.c
+@@ -1268,9 +1268,6 @@ static CURLcode nss_setup_connect(struct connectdata *conn, int sockindex)
+   CURLcode curlerr;
+   const int *cipher_to_enable;
+ 
+-  if (connssl->state == ssl_connection_complete)
+-    return CURLE_OK;
+-
+   connssl->data = data;
+ 
+ #ifdef HAVE_PK11_CREATEGENERICOBJECT
+@@ -1525,8 +1522,6 @@ static CURLcode nss_do_connect(struct connectdata *conn, int sockindex)
+     goto error;
+   }
+ 
+-  connssl->state = ssl_connection_complete;
+-
+   display_conn_info(conn, connssl->handle);
+ 
+   if (data->set.str[STRING_SSL_ISSUERCERT]) {
+@@ -1562,6 +1557,9 @@ static CURLcode nss_connect_common(struct connectdata *conn, int sockindex,
+   const bool blocking = (done == NULL);
+   CURLcode rv;
+ 
++  if(connssl->state == ssl_connection_complete)
++    return CURLE_OK;
++
+   if(connssl->connecting_state == ssl_connect_1) {
+     rv = nss_setup_connect(conn, sockindex);
+     if(rv)
+@@ -1601,7 +1599,10 @@ static CURLcode nss_connect_common(struct connectdata *conn, int sockindex,
+     /* signal completed SSL handshake */
+     *done = TRUE;
+ 
+-  connssl->connecting_state = ssl_connect_done;
++  connssl->state = ssl_connection_complete;
++
++  /* ssl_connect_done is never used outside, go back to the initial state */
++  connssl->connecting_state = ssl_connect_1;
+   return CURLE_OK;
+ }
+ 
+-- 
+2.1.0
+

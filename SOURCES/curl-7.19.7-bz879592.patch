@@ -1,0 +1,139 @@
+From a5a74fa7a9be1f9d0850e06e12450fb42aa5dd77 Mon Sep 17 00:00:00 2001
+From: Daniel Stenberg <daniel@haxx.se>
+Date: Wed, 4 Aug 2010 17:23:38 +0200
+Subject: [PATCH 1/2] SCP: send large files properly with new enough libssh2
+
+libssh2 1.2.6 and later handle >32bit file sizes properly even on 32bit
+architectures and we make sure to use that ability.
+
+Reported by: Mikael Johansson
+Bug: http://curl.haxx.se/mail/lib-2010-08/0052.html
+
+[upstream commit f8cf037ecf67d4dc490e0e54fb2c691211e859ba]
+
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ configure.ac |    3 ++-
+ lib/ssh.c    |   16 +++++++++++++---
+ lib/ssh.h    |    5 +++++
+ 3 files changed, 20 insertions(+), 4 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index e7c0d79..7ec24ba 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -1753,7 +1753,8 @@ if test X"$OPT_LIBSSH2" != Xno; then
+        dnl to prevent further configure tests to fail due to this
+ 
+        dnl libssh2_version is a post 1.0 addition
+-       AC_CHECK_FUNCS( libssh2_version )
++       dnl libssh2_scp_send64 was added in 1.2.6
++       AC_CHECK_FUNCS( libssh2_version libssh2_scp_send64 )
+ 
+        LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$DIR_SSH2"
+        export LD_LIBRARY_PATH
+diff --git a/lib/ssh.c b/lib/ssh.c
+index 77e5b55..9134314 100644
+--- a/lib/ssh.c
++++ b/lib/ssh.c
+@@ -459,6 +459,17 @@ static int sshkeycallback(CURL *easy,
+ #endif
+ 
+ /*
++ * Earlier libssh2 versions didn't do SCP properly beyond 32bit sizes on 32bit
++ * architectures so we check of the necessary function is present.
++ */
++#ifdef HAVE_LIBSSH2_SCP_SEND64
++#define SCP_SEND(a,b,c,d) libssh2_scp_send_ex(a, b, (int)(c), (size_t)d, 0, 0)
++#else
++#define SCP_SEND(a,b,c,d) libssh2_scp_send64(a, b, (int)(c),            \
++                                             (libssh2_uint64_t)d, 0, 0)
++#endif
++
++/*
+  * ssh_statemach_act() runs the SSH statemachine "one round" and returns.  The
+  * data the pointer 'block' points to will be set to TRUE if the libssh2
+  * function returns LIBSSH2_ERROR_EAGAIN meaning it wants to be called again
+@@ -2014,9 +2025,8 @@ static CURLcode ssh_statemach_act(struct connectdata *conn, bool *block)
+      * directory in the path.
+      */
+     sshc->ssh_channel =
+-      libssh2_scp_send_ex(sshc->ssh_session, sftp_scp->path,
+-                          data->set.new_file_perms,
+-                          (size_t)data->set.infilesize, 0, 0);
++      SCP_SEND(sshc->ssh_session, sftp_scp->path, data->set.new_file_perms,
++               data->set.infilesize);
+     if(!sshc->ssh_channel) {
+       if(libssh2_session_last_errno(sshc->ssh_session) ==
+          LIBSSH2_ERROR_EAGAIN) {
+diff --git a/lib/ssh.h b/lib/ssh.h
+index 204ac19..956705f 100644
+--- a/lib/ssh.h
++++ b/lib/ssh.h
+@@ -37,6 +37,11 @@
+ #  undef HAVE_LIBSSH2_SFTP_SEEK64
+ #endif
+ 
++#if defined(LIBSSH2_VERSION_NUM) && (LIBSSH2_VERSION_NUM >= 0x010206)
++#  define HAVE_LIBSSH2_SCP_SEND64 1
++#else
++#  undef HAVE_LIBSSH2_SFTP_SEEK64
++#endif
+ 
+ extern const struct Curl_handler Curl_handler_scp;
+ extern const struct Curl_handler Curl_handler_sftp;
+-- 
+1.7.1
+
+
+From b132aa5843650b37e1e520cce70eba4df8124732 Mon Sep 17 00:00:00 2001
+From: Yang Tse <yangsita@gmail.com>
+Date: Thu, 5 Aug 2010 16:27:39 +0200
+Subject: [PATCH 2/2] build: fix libssh2_scp_send64() availability
+
+[upstream commit 992ceae386cc9452d5961c20e1ce23e57260fed2]
+
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ lib/ssh.c |    2 +-
+ lib/ssh.h |    4 +---
+ 2 files changed, 2 insertions(+), 4 deletions(-)
+
+diff --git a/lib/ssh.c b/lib/ssh.c
+index 9134314..a411e08 100644
+--- a/lib/ssh.c
++++ b/lib/ssh.c
+@@ -462,7 +462,7 @@ static int sshkeycallback(CURL *easy,
+  * Earlier libssh2 versions didn't do SCP properly beyond 32bit sizes on 32bit
+  * architectures so we check of the necessary function is present.
+  */
+-#ifdef HAVE_LIBSSH2_SCP_SEND64
++#ifndef HAVE_LIBSSH2_SCP_SEND64
+ #define SCP_SEND(a,b,c,d) libssh2_scp_send_ex(a, b, (int)(c), (size_t)d, 0, 0)
+ #else
+ #define SCP_SEND(a,b,c,d) libssh2_scp_send64(a, b, (int)(c),            \
+diff --git a/lib/ssh.h b/lib/ssh.h
+index 956705f..3da0677 100644
+--- a/lib/ssh.h
++++ b/lib/ssh.h
+@@ -30,8 +30,6 @@
+ #endif
+ 
+ #if defined(LIBSSH2_VERSION_NUM) && (LIBSSH2_VERSION_NUM >= 0x010000)
+-/* libssh2_sftp_seek64() has only ever been provided by libssh2 1.0 or
+-   later */
+ #  define HAVE_LIBSSH2_SFTP_SEEK64 1
+ #else
+ #  undef HAVE_LIBSSH2_SFTP_SEEK64
+@@ -40,7 +38,7 @@
+ #if defined(LIBSSH2_VERSION_NUM) && (LIBSSH2_VERSION_NUM >= 0x010206)
+ #  define HAVE_LIBSSH2_SCP_SEND64 1
+ #else
+-#  undef HAVE_LIBSSH2_SFTP_SEEK64
++#  undef HAVE_LIBSSH2_SCP_SEND64
+ #endif
+ 
+ extern const struct Curl_handler Curl_handler_scp;
+-- 
+1.7.1
+

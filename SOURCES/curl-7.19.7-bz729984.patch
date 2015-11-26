@@ -1,0 +1,36 @@
+From 4b20b7467c24a21ff87bea0b9f1a0a48f12c7c50 Mon Sep 17 00:00:00 2001
+From: Daniel Stenberg <daniel@haxx.se>
+Date: Tue, 8 Feb 2011 22:39:04 +0100
+Subject: [PATCH] curl.1: typo in -v description
+
+[upstream commit 5348e8f276dac01e98f3c1e3fcdfa363f1df6cf8]
+
+Reported by: Ian D Allen
+Bug: https://bugs.launchpad.net/ubuntu/+source/curl/+bug/714895
+
+Forwarded to us by:
+
+Reported by: Andreas Olsson
+Bug: http://curl.haxx.se/bug/view.cgi?id=3175422
+
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ docs/curl.1 |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/docs/curl.1 b/docs/curl.1
+index ba32b6b..a7371fa 100644
+--- a/docs/curl.1
++++ b/docs/curl.1
+@@ -1267,7 +1267,7 @@ If you think this option still doesn't give you enough details, consider using
+ 
+ This option overrides previous uses of \fI--trace-ascii\fP or \fI--trace\fP.
+ 
+-Use \fI-S/--silent\fP to make curl quiet.
++Use \fI-s/--silent\fP to make curl quiet.
+ .IP "-V/--version"
+ Displays information about curl and the libcurl version it uses.
+ 
+-- 
+1.7.1
+

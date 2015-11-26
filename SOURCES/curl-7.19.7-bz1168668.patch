@@ -1,0 +1,31 @@
+From 564b023d4041fc07c845d2953a276eacd00148d4 Mon Sep 17 00:00:00 2001
+From: Kamil Dudka <kdudka@redhat.com>
+Date: Fri, 28 Nov 2014 10:44:53 +0100
+Subject: [PATCH] avoid underflow of unsigned integer in showit()
+
+Bug: http://sourceforge.net/p/curl/bugs/1104/
+---
+ lib/sendf.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/lib/sendf.c b/lib/sendf.c
+index 60ad99b..3049d94 100644
+--- a/lib/sendf.c
++++ b/lib/sendf.c
+@@ -598,7 +598,13 @@ static int showit(struct SessionHandle *data, curl_infotype type,
+ #ifdef CURL_DOES_CONVERSIONS
+   char buf[BUFSIZE+1];
+   size_t conv_size = 0;
++#endif
++
++  if(!size)
++    /* nothing to show actually --> avoid underflow of unsigned type */
++    return 0;
+ 
++#ifdef CURL_DOES_CONVERSIONS
+   switch(type) {
+   case CURLINFO_HEADER_OUT:
+     /* assume output headers are ASCII */
+-- 
+2.1.0
+

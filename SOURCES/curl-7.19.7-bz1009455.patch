@@ -1,0 +1,44 @@
+From c08e2827875781d448e0995df9f60326f818c628 Mon Sep 17 00:00:00 2001
+From: Daniel Stenberg <daniel@haxx.se>
+Date: Wed, 14 Jul 2010 23:50:01 +0200
+Subject: [PATCH] --retry: access violation with URL part sets continued
+
+When getting multiple URLs, curl didn't properly reset the byte counter
+after a successful transfer so if the subsequent transfer failed it
+would wrongly use the previous byte counter and behave badly (segfault)
+because of that. The code assumes that the byte counter and the 'stream'
+pointer is well in synch.
+
+Reported by: Jon Sargeant
+Bug: http://curl.haxx.se/bug/view.cgi?id=3028241
+
+[upstream commit c8d42b2f1c105706098309644c2aa90ae6a1206f]
+
+Signed-off-by: Kamil Dudka <kdudka@redhat.com>
+---
+ src/main.c |    2 ++
+ 1 files changed, 2 insertions(+), 0 deletions(-)
+
+diff --git a/src/main.c b/src/main.c
+index a4aa2e2..2edf9fc 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -3306,6 +3306,7 @@ static size_t my_fwrite(void *buffer, size_t sz, size_t nmemb, void *stream)
+   struct Configurable *config = out->config;
+ 
+   if(!out->stream) {
++    out->bytes = 0; /* nothing written yet */
+     /* open file for writing */
+     out->stream=fopen(out->filename, "wb");
+     if(!out->stream) {
+@@ -4488,6 +4489,7 @@ operate(struct Configurable *config, int argc, argv_item_t argv[])
+           }
+           else {
+             outs.stream = NULL; /* open when needed */
++            outs.bytes = 0;     /* reset byte counter */
+           }
+         }
+         infdopen=FALSE;
+-- 
+1.7.1
+
