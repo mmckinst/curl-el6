@@ -1,0 +1,36 @@
+From 002d58f1e8d8e725ba6d676599838983561feff9 Mon Sep 17 00:00:00 2001
+From: Daniel Stenberg <daniel@haxx.se>
+Date: Mon, 10 Aug 2015 00:12:12 +0200
+Subject: [PATCH] test46: update cookie expire time
+
+... since it went old and thus was expired and caused the test to fail!
+---
+ tests/data/test46 | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/tests/data/test46 b/tests/data/test46
+index b6f8f83..b6ebe80 100644
+--- a/tests/data/test46
++++ b/tests/data/test46
+@@ -51,8 +51,8 @@ TZ=GMT
+ 
+ www.fake.come	FALSE	/	FALSE	1022144953	cookiecliente	si
+ www.loser.com	FALSE	/	FALSE	1139150993	UID	99
+-%HOSTIP	FALSE	/	FALSE	1439150993	mooo	indeed
+-#HttpOnly_%HOSTIP	FALSE	/want	FALSE	1439150993	mooo2	indeed2
++%HOSTIP	FALSE	/	FALSE	1739150993	mooo	indeed
++#HttpOnly_%HOSTIP	FALSE	/want	FALSE	1739150993	mooo2	indeed2
+ %HOSTIP	FALSE	/want	FALSE	0	empty	
+ </file>
+ </client>
+@@ -76,8 +76,8 @@ Cookie: empty=; mooo2=indeed2; mooo=indeed
+ 
+ www.fake.come	FALSE	/	FALSE	1022144953	cookiecliente	si
+ www.loser.com	FALSE	/	FALSE	1139150993	UID	99
+-%HOSTIP	FALSE	/	FALSE	1439150993	mooo	indeed
+-#HttpOnly_%HOSTIP	FALSE	/want	FALSE	1439150993	mooo2	indeed2
++%HOSTIP	FALSE	/	FALSE	1739150993	mooo	indeed
++#HttpOnly_%HOSTIP	FALSE	/want	FALSE	1739150993	mooo2	indeed2
+ %HOSTIP	FALSE	/want	FALSE	0	empty	
+ %HOSTIP	FALSE	/	FALSE	2054030187	ckyPersistent	permanent
+ %HOSTIP	FALSE	/	FALSE	0	ckySession	temporary

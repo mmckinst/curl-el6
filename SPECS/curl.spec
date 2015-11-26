@@ -1,7 +1,7 @@
 Summary: A utility for getting files from remote servers (FTP, HTTP, and others)
 Name: curl
 Version: 7.19.7
-Release: 46%{?dist}
+Release: 460%{?dist}
 License: MIT
 Group: Applications/Internet
 Source: http://curl.haxx.se/download/%{name}-%{version}.tar.lzma
@@ -82,6 +82,10 @@ Patch255: curl-7.19.7-CVE-2014-3707.patch
 Patch256: curl-7.19.7-CVE-2014-8150.patch
 Patch257: curl-7.19.7-CVE-2015-3143.patch
 Patch258: curl-7.19.7-CVE-2015-3148.patch
+
+Patch500: curl-7.19.7-bz1042989.patch
+Patch501: curl-7.19.7-bz1277551.patch
+
 Provides: webclient
 URL: http://curl.haxx.se/
 BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
@@ -363,6 +367,15 @@ use cURL's capabilities internally.
 # close Negotiate connections when done (CVE-2015-3148)
 %patch258 -p1
 
+# use TLSv1.2 instead of TLSv1.2 as the highest version of TLS
+# use TLSv1.0 instead of SSLv3 as the lowest version of SSL/TLS
+%patch500 -p1
+
+# bz #1277551
+# update cookie expire time so a test will pass
+# red hat will probably fix this in their next release of curl
+%patch501 -p1
+
 # run aclocal since we are going to run automake
 aclocal -I m4
 
@@ -474,6 +487,11 @@ rm -rf $RPM_BUILD_ROOT
 %{_datadir}/aclocal/libcurl.m4
 
 %changelog
+* Thu Nov 26 2015 Mark McKinstry <mmckinst@nexcess.net> - 7.19.7-460
+- use TLSv1.2 instead of TLSv1.2 as the highest version of TLS (#1042989)
+- use TLSv1.0 instead of SSLv3 as the lowest version of SSL/TLS
+- update cookie expire time for test (#1277551)
+
 * Mon Apr 27 2015 Kamil Dudka <kdudka@redhat.com> 7.19.7-46
 - require credentials to match for NTLM re-use (CVE-2015-3143)
 - close Negotiate connections when done (CVE-2015-3148)

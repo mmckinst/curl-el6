@@ -1,0 +1,14 @@
+--- curl-7.19.7/lib/nss.c.orig	2015-11-25 21:35:37.407021191 -0500
++++ curl-7.19.7/lib/nss.c	2015-11-25 21:49:03.863690208 -0500
+@@ -1176,10 +1176,8 @@
+   switch (data->set.ssl.version) {
+   default:
+   case CURL_SSLVERSION_DEFAULT:
+-    sslver->min = SSL_LIBRARY_VERSION_3_0;
+-    return CURLE_OK;
+-
+   case CURL_SSLVERSION_TLSv1:
++    sslver->min = SSL_LIBRARY_VERSION_TLS_1_0;
+ #ifdef SSL_LIBRARY_VERSION_TLS_1_2
+     sslver->max = SSL_LIBRARY_VERSION_TLS_1_2;
+ #elif defined SSL_LIBRARY_VERSION_TLS_1_1
