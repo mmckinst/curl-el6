@@ -16,7 +16,7 @@ fixing the problem as they did on RHEL 7.
 
 Copr
 ----
-https://copr.fedoraproject.org/coprs/mmckinst/curl/
+https://copr.fedoraproject.org/coprs/mmckinst/curl-el6/
 
 
 Testing
@@ -27,7 +27,7 @@ curl-7.19.7-46.el6.x86_64
 [root@centos-6 ~]# curl -s 'https://www.howsmyssl.com/a/check' | jq '.tls_version'
 "TLS 1.0"
 [root@centos-6 ~]#
-[root@centos-6 ~]# curl -s -o /etc/yum.repos.d/mmckinst-curl-epel-6.repo https://copr.fedoraproject.org/coprs/mmckinst/curl/repo/epel-6/mmckinst-curl-epel-6.repo
+[root@centos-6 ~]# curl -s -o /etc/yum.repos.d/mmckinst-curl-el6 https://copr.fedoraproject.org/coprs/mmckinst/curl-el6/repo/epel-6/mmckinst-curl-el6-epel-6.repo
 [root@centos-6 ~]# yum -q -y upgrade curl
 [root@centos-6 ~]# rpm -q curl
 curl-7.19.7-460.el6.x86_64
