@@ -14,24 +14,45 @@ the corresponding bug report for RHEL 6 where Red Hat says they will not be
 fixing the problem as they did on RHEL 7.
 
 
-Copr
-----
-https://copr.fedoraproject.org/coprs/mmckinst/curl-el6/
-
+Instructions
+------------
+```
+curl -s -o /etc/yum.repos.d/mmckinst-curl-el6.repo https://copr.fedoraproject.org/coprs/mmckinst/curl-el6/repo/epel-6/mmckinst-curl-el6-epel-6.repo
+yum upgrade curl
+```
 
 Testing
 -------
+
+### curl command line
+
+The best way to test the TLS version you negotiate is by using [howsmyssl.com's API](https://www.howsmyssl.com/s/api.html) and [jq](https://stedolan.github.io/jq/) from EPEL.
+
 ```
-[root@centos-6 ~]# rpm -q curl
-curl-7.19.7-46.el6.x86_64
-[root@centos-6 ~]# curl -s 'https://www.howsmyssl.com/a/check' | jq '.tls_version'
-"TLS 1.0"
-[root@centos-6 ~]#
-[root@centos-6 ~]# curl -s -o /etc/yum.repos.d/mmckinst-curl-el6 https://copr.fedoraproject.org/coprs/mmckinst/curl-el6/repo/epel-6/mmckinst-curl-el6-epel-6.repo
-[root@centos-6 ~]# yum -q -y upgrade curl
-[root@centos-6 ~]# rpm -q curl
-curl-7.19.7-460.el6.x86_64
-[root@centos-6 ~]# curl -s 'https://www.howsmyssl.com/a/check' | jq '.tls_version'
-"TLS 1.2"
-[root@centos-6 ~]#
+curl -s 'https://www.howsmyssl.com/a/check' | jq '.tls_version'
 ```
+
+Or you can test using python and grep.
+
+```
+curl -s 'https://www.howsmyssl.com/a/check' | python -mjson.tool | grep tls_version
+```
+
+### libcurl
+
+Your programming language is going to be using the libcurl library instead of the command line version of curl.
+
+```
+<?php
+$ch = curl_init();
+curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+curl_setopt($ch, CURLOPT_URL, "https://www.howsmyssl.com/a/check");
+$result = json_decode(curl_exec($ch),true);
+curl_close($ch);
+
+print $result['tls_version'] . "\n";
+```
+
+Copr
+----
+https://copr.fedoraproject.org/coprs/mmckinst/curl-el6/
