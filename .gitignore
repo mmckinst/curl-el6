@@ -3,3 +3,4 @@ BUILDROOT
 RPMS
 SOURCES/*.tar.lzma
 SRPMS
+.vagrant
