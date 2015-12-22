@@ -9,8 +9,10 @@ Background
 [RHBZ#1170339](https://bugzilla.redhat.com/show_bug.cgi?id=1170339) has
 discussion and background information about curl using TLSv1.0 instead of
 TLSv1.2 on
-RHEL 7. [RHBZ#1042989](https://bugzilla.redhat.com/show_bug.cgi?id=1042989) is
-the corresponding bug report for RHEL 6 where Red Hat says they will not be
+RHEL 7. ~~[RHBZ#1042989](https://bugzilla.redhat.com/show_bug.cgi?id=1042989)~~
+[RHBZ#1272504](https://bugzilla.redhat.com/show_bug.cgi?id=1272504) and
+[RHBZ#1289205](https://bugzilla.redhat.com/show_bug.cgi?id=1289205) are the
+corresponding bug reports for RHEL 6 where Red Hat says they will ~~not~~ be
 fixing the problem as they did on RHEL 7.
 
 
