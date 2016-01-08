@@ -1,0 +1,15 @@
+---
+driver:
+  name: docker
+
+driver_config:
+  use_sudo: false
+
+provisioner: 
+  name: shell
+
+platforms:
+  - name: centos-6.7
+
+suites:
+  - name: default
