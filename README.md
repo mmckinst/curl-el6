@@ -1,3 +1,5 @@
+[![Travis](https://img.shields.io/travis/mmckinst/curl-el6.svg)](https://travis-ci.org/mmckinst/curl-el6)
+
 This is an updated version of the CentOS 6 curl rpm that changes two things:
 
 1. uses TLSv1.2 instead of TLSv1.0 as the highest version of TLS

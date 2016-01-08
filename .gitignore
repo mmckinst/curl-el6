@@ -4,3 +4,7 @@ RPMS
 SOURCES/*.tar.lzma
 SRPMS
 .vagrant
+vendor/
+Gemfile.lock
+.bundle/
+.kitchen/
