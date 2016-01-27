@@ -21,7 +21,7 @@ fixing the problem as they did on RHEL 7.
 Instructions
 ------------
 ```
-curl -s -o /etc/yum.repos.d/mmckinst-curl-el6.repo https://copr.fedoraproject.org/coprs/mmckinst/curl-el6/repo/epel-6/mmckinst-curl-el6-epel-6.repo
+curl -s -o /etc/yum.repos.d/mmckinst-curl-el6.repo https://copr.fedorainfracloud.org/coprs/mmckinst/curl-el6/repo/epel-6/mmckinst-curl-el6-epel-6.repo
 yum upgrade curl
 ```
 
