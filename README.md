@@ -46,7 +46,7 @@ curl -s 'https://www.howsmyssl.com/a/check' | python -mjson.tool | grep tls_vers
 
 Your programming language is going to be using the libcurl library instead of the command line version of curl.
 
-```
+```php
 <?php
 $ch = curl_init();
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -59,4 +59,4 @@ print $result['tls_version'] . "\n";
 
 Copr
 ----
-https://copr.fedoraproject.org/coprs/mmckinst/curl-el6/
+https://copr.fedorainfracloud.org/coprs/mmckinst/curl-el6/
