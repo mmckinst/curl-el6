@@ -59,4 +59,4 @@ print $result['tls_version'] . "\n";
 
 Copr
 ----
-https://copr.fedoraproject.org/coprs/mmckinst/curl-el6/
+https://copr.fedorainfracloud.org/coprs/mmckinst/curl-el6/
