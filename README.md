@@ -46,7 +46,7 @@ curl -s 'https://www.howsmyssl.com/a/check' | python -mjson.tool | grep tls_vers
 
 Your programming language is going to be using the libcurl library instead of the command line version of curl.
 
-```
+```php
 <?php
 $ch = curl_init();
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
