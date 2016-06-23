@@ -48,5 +48,5 @@ But Red Hat decided to fix this bug in
 
 This RPM will not be updated. If the output of `rpm -q --qf
 '%{name}-%{version}-%{release}\n' curl` says you have `curl-7.19.7-460.el6` you
-should switch to`'curl-7.19.7-52.el6` or whatever the latest one is from Red
+should switch to`curl-7.19.7-52.el6` or whatever the latest one is from Red
 Hat.
